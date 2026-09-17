@@ -1,0 +1,15 @@
+[project]
+name = "ts2068-debug"
+version = "0.1.0"
+description = "Automated ZRCP-based debugging/testing controller for TS2068 ROM development"
+requires-python = ">=3.10"
+
+[project.scripts]
+ts2068-debug = "ts2068_debug.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["ts2068_debug*"]
