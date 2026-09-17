@@ -103,6 +103,15 @@ def main(argv=None) -> int:
     p_key.add_argument("text")
     p_key.add_argument("--delay-ms", type=int, default=100)
 
+    p_press = sub.add_parser("press")
+    p_press.add_argument("name", help="named key, e.g. ENTER, LEFT, BACKSPACE (see Ts2068Debug.KEY_CODES)")
+    p_press.add_argument("--hold-ms", type=int, default=80)
+
+    p_type = sub.add_parser("type")
+    p_type.add_argument("text", help="one or more lines (use \\n for a newline); each line is typed then ENTER is pressed")
+    p_type.add_argument("--char-delay-ms", type=int, default=60)
+    p_type.add_argument("--settle-ms", type=int, default=150)
+
     sub.add_parser("status")
 
     p_screenshot = sub.add_parser("screenshot")
@@ -206,6 +215,13 @@ def main(argv=None) -> int:
             elif args.cmd == "key":
                 dbg.send_keys_ascii(args.text, delay_ms=args.delay_ms)
                 _emit(args.json, {"status": "ok"}, "sent")
+            elif args.cmd == "press":
+                dbg.press_key(args.name, hold_ms=args.hold_ms)
+                _emit(args.json, {"status": "ok"}, "pressed")
+            elif args.cmd == "type":
+                lines = args.text.split("\\n")
+                dbg.type_program(lines, char_delay_ms=args.char_delay_ms, settle_ms=args.settle_ms)
+                _emit(args.json, {"status": "ok", "lines": len(lines)}, "typed")
             elif args.cmd == "screenshot":
                 dbg.save_screen(args.path)
                 _emit(args.json, {"status": "ok", "path": args.path}, args.path)

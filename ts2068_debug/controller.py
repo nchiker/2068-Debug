@@ -276,9 +276,60 @@ class Ts2068Debug:
 
     # -- keyboard --------------------------------------------------------
 
+    # ZRCP caps a command at REMOTE_MAX_PARAMETERS_COMMAND=20 arguments total (1 for
+    # the delay + up to 19 key codes) -- confirmed in ~/zesarux-source/src/zrcp/remote.c.
+    # A send-keys-ascii call with more codes than that is silently truncated: nothing
+    # past the 19th character is ever typed. Chunk to stay under the limit.
+    _SEND_KEYS_ASCII_CHUNK = 19
+
+    # From ~/zesarux-source/src/utils.h enum util_teclas: named (non-ASCII) keys start
+    # at 128 and increment in this declared order.
+    KEY_CODES = {
+        "SPACE": 128, "ENTER": 129, "HOME": 130, "END": 131, "DEL": 132,
+        "SHIFT_L": 133, "SHIFT_R": 134, "CAPS_SHIFT": 135, "ALT_L": 136, "ALT_R": 137,
+        "CONTROL_L": 138, "CONTROL_R": 139, "BACKSPACE": 140, "FIRE": 141,
+        "LEFT": 142, "RIGHT": 143, "DOWN": 144, "UP": 145, "TAB": 146,
+        "CAPS_LOCK": 147, "COMMA": 148, "PERIOD": 149,
+    }
+
     def send_keys_ascii(self, text: str, delay_ms: int = 100) -> None:
-        codes = " ".join(str(ord(c)) for c in text)
-        self._zrcp.command(f"send-keys-ascii {delay_ms} {codes}")
+        codes = [str(ord(c)) for c in text]
+        for i in range(0, len(codes), self._SEND_KEYS_ASCII_CHUNK):
+            chunk = " ".join(codes[i : i + self._SEND_KEYS_ASCII_CHUNK])
+            self._zrcp.command(f"send-keys-ascii {delay_ms} {chunk}")
+
+    def press_key(self, name: str, hold_ms: int = 80) -> None:
+        """Press and release a named (non-ASCII) key, e.g. ENTER, LEFT, BACKSPACE."""
+        code = self.KEY_CODES.get(name.upper())
+        if code is None:
+            raise ControllerError(f"unknown key name: {name!r} (known: {sorted(self.KEY_CODES)})")
+        import time as _time
+
+        self._zrcp.command(f"send-keys-event {code} 1")
+        _time.sleep(hold_ms / 1000)
+        self._zrcp.command(f"send-keys-event {code} 0")
+
+    def type_line(self, text: str, char_delay_ms: int = 60, settle_ms: int = 150) -> None:
+        """Type one line of text (no embedded newline) and press ENTER.
+
+        Uses send-keys-string, which -- unlike send-keys-ascii -- takes the whole
+        remainder of the ZRCP command line as one string, so it isn't subject to the
+        20-argument cap. Text must not contain '\\n'/'\\r' (ZRCP is line-oriented);
+        use type_program() for multi-line input.
+        """
+        import time as _time
+
+        if "\n" in text or "\r" in text:
+            raise ControllerError("type_line() text must not contain newlines; use type_program()")
+        if text:
+            self._zrcp.command(f"send-keys-string {char_delay_ms} {text}")
+        self.press_key("ENTER")
+        _time.sleep(settle_ms / 1000)
+
+    def type_program(self, lines: list[str], char_delay_ms: int = 60, settle_ms: int = 150) -> None:
+        """Type each line (already split, no embedded newlines) followed by ENTER."""
+        for line in lines:
+            self.type_line(line, char_delay_ms=char_delay_ms, settle_ms=settle_ms)
 
     # -- screen ------------------------------------------------------------
 
