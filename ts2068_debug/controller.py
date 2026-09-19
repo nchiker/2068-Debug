@@ -220,9 +220,26 @@ class Ts2068Debug:
     def pause(self) -> None:
         self._ensure_step_mode()
 
+    # After exit-cpu-step, the ROM's keyboard-scan ISR needs a brief real
+    # window to actually resume its normal polling rhythm before it will
+    # reliably see injected keystrokes -- confirmed live (2026-09-19,
+    # porting a 2068-Leap test-suite harness): typing immediately after
+    # resume(), with zero gap, silently dropped the first 1-2 characters
+    # of the first line ("BORDER 4" landed as "RDER 4", tripping the
+    # ROM's own checker). A CLI-per-command caller never hits this,
+    # because the subprocess-spawn/reconnect overhead between commands
+    # already provides more than enough incidental delay; a persistent
+    # Python-API session calling type_line()/type_program() right after
+    # resume() (exactly the documented SKILL.md/README workflow) does
+    # not, and needs this explicitly.
+    _RESUME_SETTLE_S = 0.2
+
     def resume(self) -> None:
         if self._in_step_mode:
             self._zrcp.command("exit-cpu-step")
+            import time as _time
+
+            _time.sleep(self._RESUME_SETTLE_S)
 
     def step(self, count: int = 1) -> Registers:
         self._ensure_step_mode()

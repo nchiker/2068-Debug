@@ -4,6 +4,7 @@ Found live: ZRCP's REMOTE_MAX_PARAMETERS_COMMAND=20 (~/zesarux-source/src/zrcp/r
 silently truncates a send-keys-ascii command with more than 19 key codes -- anything
 past the 19th character was never typed. Ts2068Debug.send_keys_ascii must chunk.
 """
+import time
 from unittest.mock import MagicMock
 
 from ts2068_debug.controller import Ts2068Debug
@@ -71,3 +72,43 @@ def test_keyboard_calls_refuse_while_paused():
         except Exception as exc:
             assert "paused" in str(exc)
     dbg._zrcp.command.assert_not_called()
+
+
+def test_resume_settles_before_returning():
+    """Regression test for the "typing immediately after resume() drops
+    the first characters" gotcha (gotchas.md), found live 2026-09-19:
+    with zero gap, `BORDER 4` typed right after `resume()` landed on
+    screen as `RDER 4` (confirmed via screenshot diff against a real
+    2068-Leap ROM) -- the ROM's keyboard-scan ISR needs a brief real
+    window to resume normal polling. resume() must not return
+    immediately after exit-cpu-step; it must hold for
+    _RESUME_SETTLE_S first, so every caller (not just ones that happen
+    to add their own delay) gets a session where typing works right
+    away."""
+    dbg = _make_debug_with_mock_zrcp()
+    dbg._zrcp.in_step_mode = True
+
+    t0 = time.monotonic()
+    dbg.resume()
+    elapsed = time.monotonic() - t0
+
+    dbg._zrcp.command.assert_called_once_with("exit-cpu-step")
+    assert elapsed >= dbg._RESUME_SETTLE_S, (
+        f"resume() returned after only {elapsed:.3f}s, expected to hold "
+        f"for at least _RESUME_SETTLE_S={dbg._RESUME_SETTLE_S}s"
+    )
+
+
+def test_resume_is_a_noop_when_already_running():
+    """resume() while already free-running (not in step mode) must not
+    send exit-cpu-step again, and -- since there was nothing to settle
+    after -- must not pay the settle delay either."""
+    dbg = _make_debug_with_mock_zrcp()
+    dbg._zrcp.in_step_mode = False
+
+    t0 = time.monotonic()
+    dbg.resume()
+    elapsed = time.monotonic() - t0
+
+    dbg._zrcp.command.assert_not_called()
+    assert elapsed < 0.05

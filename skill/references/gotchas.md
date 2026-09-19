@@ -13,6 +13,29 @@ paused, and injecting keystrokes while paused does nothing visible at all.
 if you ever see that error, the fix is always `resume()` first, not a bug in
 your reproduction.
 
+## Typing immediately after `resume()` drops the first characters
+
+A second real gotcha in the same area as the one above, found the same
+session (porting a 2068-Leap test-suite harness): even once you've
+correctly called `resume()` before typing, the ROM's keyboard-scan ISR
+needs a brief real window to actually resume its normal polling rhythm.
+Typing with zero gap after `resume()` — exactly the sequence this file's
+own SKILL.md/README examples show — silently dropped the first 1-2
+characters of the first line in testing: `BORDER 4` landed on screen as
+`RDER 4`, tripping the ROM's own checker (`1 ERROR FOUND`). Confirmed via
+screenshot diff, not just a register guess.
+
+A CLI-per-command caller (`ts2068-debug type ...` as a separate process
+each time) never hits this, because the subprocess-spawn/reconnect
+overhead between commands already provides more than enough incidental
+delay to mask it — which is exactly why this went unnoticed until a
+persistent-session Python API caller (`resume()` then `type_program()`
+in one process, no gap) hit it directly. `resume()` now sleeps ~200ms
+after `exit-cpu-step` before returning, fixing this at the source for
+every caller — but if you ever see a typed line's leading characters
+mysteriously missing, this is the first thing to suspect, especially if
+you've built your own lower-level sequence that bypasses `resume()`.
+
 ## `send-keys-ascii` truncates past 19 codes
 
 ZRCP caps any single command at `REMOTE_MAX_PARAMETERS_COMMAND=20` total
