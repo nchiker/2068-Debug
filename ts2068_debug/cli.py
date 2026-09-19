@@ -118,6 +118,17 @@ def main(argv=None) -> int:
     p_break.add_argument("target")
     p_break.add_argument("--index", type=int, default=1)
 
+    p_clear_break = sub.add_parser(
+        "clear-break",
+        help="clear a breakpoint's condition (disable it) -- required "
+             "before resuming past a breakpoint you just hit and reached "
+             "your target with (a hand-rolled break+run sequence), or the "
+             "next run() re-triggers immediately on the same still-armed "
+             "condition and executes nothing; run_until() already does "
+             "this internally",
+    )
+    p_clear_break.add_argument("--index", type=int, default=1)
+
     p_key = sub.add_parser("key")
     p_key.add_argument("text")
     p_key.add_argument("--delay-ms", type=int, default=100)
@@ -252,6 +263,9 @@ def main(argv=None) -> int:
             elif args.cmd == "break":
                 dbg.set_breakpoint(args.index, args.target)
                 _emit(args.json, {"status": "ok", "index": args.index, "target": args.target}, "breakpoint set")
+            elif args.cmd == "clear-break":
+                dbg.clear_breakpoint(args.index)
+                _emit(args.json, {"status": "ok", "index": args.index}, "breakpoint cleared")
             elif args.cmd == "key":
                 dbg.send_keys_ascii(args.text, delay_ms=args.delay_ms)
                 _emit(args.json, {"status": "ok"}, "sent")

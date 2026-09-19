@@ -82,3 +82,5 @@ def test_hard_reset_does_not_touch_pc(tmp_path):
         )
     finally:
         dbg.stop()
+
+

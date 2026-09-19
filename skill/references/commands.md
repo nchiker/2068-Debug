@@ -69,6 +69,7 @@ directly as a number instead of screenshotting and decoding a pixel color.
 | Command | Purpose |
 |---|---|
 | `break TARGET [--index N]` | set a breakpoint (symbol or address; becomes a `PC=<addr>H` condition under the hood) |
+| `clear-break [--index N]` | clear a breakpoint's condition (disable it) -- **required** before your next `run` if you used `break`+`run` by hand to reach that exact target: PC is now sitting right on the still-armed condition, so an un-cleared breakpoint makes the next `run` re-trigger immediately and execute nothing (confirmed live: PC stuck exactly at the breakpoint address, ~0 TSTATES). `run_until()` already clears its own breakpoint internally; this is only needed for a hand-rolled break+run sequence (e.g. arming a breakpoint, then poking memory once you're there, then resuming). |
 | `watch ADDRESS [--type read\|write\|readwrite] [--items N]` | memory watchpoint |
 | `watchpoints` | list active memory watchpoints |
 

@@ -112,3 +112,23 @@ def test_resume_is_a_noop_when_already_running():
 
     dbg._zrcp.command.assert_not_called()
     assert elapsed < 0.05
+
+
+def test_clear_breakpoint_sends_bare_set_breakpoint_command():
+    """Regression coverage for a real CLI capability gap found 2026-09-19
+    (see gotchas.md "Breakpoints are persistent -- clear them yourself
+    for one-shot use"): set_breakpoint()/clear_breakpoint() already
+    existed on the controller (used internally by run_until()), but the
+    CLI never exposed clearing one -- only `break` (set) existed, not
+    `clear-break`. A hand-rolled break()+run()+run() sequence whose
+    execution legitimately revisits its own breakpoint address mid-run
+    needs to clear it before the second run(), exactly as run_until()
+    already does internally. This checks clear_breakpoint() sends the
+    right bare `set-breakpoint <index>` (no condition) ZRCP command that
+    disables it, matching run_until()'s own internal call."""
+    dbg = _make_debug_with_mock_zrcp()
+    dbg._breakpoints_enabled = True
+
+    dbg.clear_breakpoint(1)
+
+    dbg._zrcp.command.assert_called_once_with("set-breakpoint 1")

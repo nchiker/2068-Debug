@@ -152,6 +152,31 @@ once, early, during boot — `run_until()` alone is fine for anything the
 CPU loops back into repeatedly (an idle/command loop, a keyboard-wait
 state), where missing the first pass costs nothing.
 
+## Breakpoints are persistent — clear them yourself for one-shot use
+
+Not a tool bug, just easy to forget: a ZRCP breakpoint (`PC=<addr>H`)
+stays armed until explicitly cleared, and fires every time execution
+reaches that address again — standard debugger semantics, not one-shot.
+Found the same 2068-Leap test-suite porting session, in a hand-rolled
+`break` + `run` + poke-memory + `run` sequence (arm a breakpoint, run to
+it, poke some bytes now that you're paused there, then resume to
+continue past it): for a program whose execution legitimately revisits
+that same address later (confirmed live: two structurally-identical
+test fixtures behaved differently — one never revisited the breakpoint
+address and ran to completion normally, the other did revisit it and
+got stuck, TSTATES near 0, on the second `run()`), the still-armed
+breakpoint re-fires and blocks further progress, looking exactly like a
+hang.
+
+`run_until()` already gets this right — it clears its own breakpoint
+(`set-breakpoint <index>` with no condition) right after reaching the
+target, before returning, precisely because it's designed for one-shot
+"run until this point" use. A hand-rolled `break`/`set_breakpoint()` +
+`run()` sequence must do the same if you want one-shot semantics: call
+`clear-break` / `clear_breakpoint()` before your next `run()`. (The CLI
+didn't expose `clear_breakpoint()` at all until this session — `break`
+existed, clearing it didn't. Now both do.)
+
 ## If none of this explains what you're seeing
 
 That's a real signal, not a dead end. If ZEsarUX can clearly do something
