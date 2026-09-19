@@ -21,3 +21,22 @@ def test_parse_registers_flag_fields_kept_as_strings():
     regs = parse_registers(SAMPLE_REPLY)
     assert regs.values["F"] == "-Z---P--"
     assert regs.values["F'"] == "SZ5H3PNC"
+
+
+def test_parse_registers_captures_interrupt_state():
+    # IM1 / IFF-- / TSTATES: N are bare (non key=value) tokens that previously fell
+    # through the key=value regex entirely and were silently absent from parsed
+    # output -- exactly the interrupt state ISR/timing-bug debugging needs.
+    regs = parse_registers(SAMPLE_REPLY)
+    assert regs.values["IM"] == 1
+    assert regs.values["IFF1"] == "clear"
+    assert regs.values["IFF2"] == "clear"
+    assert regs.values["TSTATES"] == 37
+
+
+def test_parse_registers_iff_set_state():
+    reply = SAMPLE_REPLY.replace("IM1 IFF--", "IM2 IFF12")
+    regs = parse_registers(reply)
+    assert regs.values["IM"] == 2
+    assert regs.values["IFF1"] == "set"
+    assert regs.values["IFF2"] == "set"

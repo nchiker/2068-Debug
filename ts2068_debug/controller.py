@@ -22,6 +22,14 @@ _HEX_REGS = {
     "AF'", "BC'", "HL'", "DE'", "I", "R", "MEMPTR",
 }
 
+# Bare (non key=value) tokens get-registers/cpu-step also emit. These previously fell
+# through _REG_KV_RE entirely and were silently absent from parsed/JSON output -- a real
+# gap for interrupt-related debugging (the z80-skills debug-z80 symptom router calls out
+# "capture interrupt state" for ISR-only/flaky/timing-sensitive failures specifically).
+_IM_RE = re.compile(r"(?<![A-Za-z])IM([0-2])(?![A-Za-z0-9])")
+_IFF_RE = re.compile(r"(?<![A-Za-z])IFF([0-9-]{2})(?![A-Za-z0-9])")
+_BARE_INT_RE = re.compile(r"\b(VPS|TSTATES):\s*(\d+)")
+
 
 class ControllerError(Exception):
     pass
@@ -46,6 +54,21 @@ def parse_registers(reply: str) -> Registers:
                 values[name] = raw_val
         else:
             values[name] = raw_val
+    im_match = _IM_RE.search(reply)
+    if im_match:
+        values["IM"] = int(im_match.group(1))
+    iff_match = _IFF_RE.search(reply)
+    if iff_match:
+        # Each character is '1'/'2' when that flip-flop is set, '-' when clear. Kept
+        # as strings (like F/F') so they land in the CLI's "flags" bucket, not
+        # "registers" -- bool would technically work too since bool is an int
+        # subclass, but landing interrupt-enable state next to the bit-string flags
+        # is the more natural grouping for a human or a caller scanning the reply.
+        iff1, iff2 = iff_match.group(1)
+        values["IFF1"] = "set" if iff1 != "-" else "clear"
+        values["IFF2"] = "set" if iff2 != "-" else "clear"
+    for name, raw_val in _BARE_INT_RE.findall(reply):
+        values[name] = int(raw_val)
     return Registers(values=values, raw=reply)
 
 
