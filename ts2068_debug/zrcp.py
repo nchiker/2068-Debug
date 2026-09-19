@@ -69,17 +69,41 @@ class ZRCPClient:
             try:
                 chunk = self._sock.recv(65536)
             except socket.timeout as exc:
-                raise ZRCPError(f"timed out waiting for ZRCP reply (partial: {self._buf!r})") from exc
+                partial = self._buf
+                # The command that timed out is still in flight server-side (ZEsarUX has
+                # no cancel); leaving this socket/buffer in place would corrupt every
+                # later command's prompt detection with these stale bytes. Reconnect so
+                # the client stays usable for follow-up debugging (pause/regs/status)
+                # after a real hang, instead of wedging the whole session.
+                self.close()
+                try:
+                    self.connect()
+                except ZRCPError:
+                    pass
+                raise ZRCPError(f"timed out waiting for ZRCP reply (partial: {partial!r})") from exc
             if not chunk:
                 raise ZRCPError("ZRCP connection closed unexpectedly")
             self._buf += chunk
 
-    def command(self, line: str) -> str:
-        """Send one command line, return its reply text with the trailing prompt stripped."""
+    def command(self, line: str, timeout: float | None = None) -> str:
+        """Send one command line, return its reply text with the trailing prompt stripped.
+
+        `timeout`, when given, overrides the socket timeout for this call only (e.g. a
+        bounded `run` for millions of opcodes can legitimately take far longer than the
+        default 10s). The socket's original timeout is always restored afterwards, even
+        on error, so a one-off long call doesn't leak a relaxed timeout onto later short
+        commands (which would turn a real hang into a long hang before it's reported).
+        """
         if self._sock is None:
             raise ZRCPError("not connected")
-        self._sock.sendall((line + "\n").encode("utf-8"))
-        reply = self._read_until_prompt()
+        if timeout is not None:
+            self._sock.settimeout(timeout)
+        try:
+            self._sock.sendall((line + "\n").encode("utf-8"))
+            reply = self._read_until_prompt()
+        finally:
+            if timeout is not None:
+                self._sock.settimeout(self.timeout)
         if reply.startswith("Error") or reply.startswith("ERROR"):
             raise ZRCPError(f"{line!r} -> {reply}")
         return reply

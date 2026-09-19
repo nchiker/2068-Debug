@@ -76,7 +76,23 @@ Every command accepts `--json` for machine-readable output, e.g.:
 | `status` | session/process liveness, symbol count |
 
 `ts2068-debug` never runs unbounded: every `run` carries an explicit ZRCP `limit`
-(default `max_run_instructions`, 2,000,000 opcodes) — see `docs/architecture.md`.
+(default `max_run_instructions`, 2,000,000 opcodes) — see `docs/architecture.md`. A
+bounded `run` scales its own read timeout to the requested instruction count (real
+ZEsarUX runs at hardware-accurate speed unless configured otherwise, so a full
+2,000,000-opcode bound can legitimately take longer than a fixed short timeout).
+
+## Concurrent/isolated sessions
+
+CLI state (the active ZEsarUX host/port/PID/symbols) lives in `~/.ts2068-debug/state.json`
+by default. Set `TS2068_DEBUG_STATE_DIR` (and a distinct `--port` on `start`) to run a
+second, independent session alongside an existing one — e.g. one investigation session
+per bug, or a scratch session for testing the harness itself without disturbing a live
+debugging session:
+
+```bash
+TS2068_DEBUG_STATE_DIR=/tmp/ts2068-debug-scratch ts2068-debug --json start \
+  --rom build/ts2068rom_zesarux.bin --port 10001
+```
 
 ## Python API
 

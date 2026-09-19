@@ -157,6 +157,15 @@ class Ts2068Debug:
             reply = self._zrcp.command("cpu-step")
         return parse_registers(reply)
 
+    # Conservative floor on achievable opcodes/sec for a bounded `run`, used only to size
+    # the socket read timeout generously enough that a legitimate long run (e.g. the
+    # 2,000,000-opcode default) can't be mistaken for a hang. Real ZEsarUX/host throughput
+    # is normally far higher; this only needs to avoid false positives, not be accurate.
+    _MIN_RUN_OPCODES_PER_SEC = 20_000
+
+    def _run_timeout(self, limit: int) -> float:
+        return max(self._zrcp.timeout, limit / self._MIN_RUN_OPCODES_PER_SEC + 10)
+
     def run(self, max_instructions: Optional[int] = None, verbose: bool = False) -> str:
         """Bounded run. NEVER runs unbounded: falls back to self.max_run_instructions."""
         self._ensure_step_mode()
@@ -165,7 +174,7 @@ class Ts2068Debug:
         if verbose:
             parts.append("verbose")
         parts.append(str(limit))
-        return self._zrcp.command(" ".join(parts))
+        return self._zrcp.command(" ".join(parts), timeout=self._run_timeout(limit))
 
     def run_until(self, target, max_instructions: Optional[int] = None) -> Registers:
         """Set a one-shot breakpoint at target (symbol or address) and run to it."""
