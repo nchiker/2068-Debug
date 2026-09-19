@@ -28,12 +28,18 @@ the machine actually *does*, not just what the source says it should do.
 
 If a bug turns out to be a known, purely static, checkable pattern in a
 project's own BASIC/Forth dialect — not a real interpreter defect — the
-right fix is a project-local pre-flight validator, not the debugger. See
-`nchiker/2068-Leap` issue #3 ("Idea: a pre-flight dialect validator, in the
-spirit of zmakebas+") for the concrete example: single-letter variable
-names, 0-indexed `DIM`, a fixed label-table budget, and one syntactic
-`PRINT` pattern were all discovered by injecting and running a program
-under `ts2068-debug` when each is checkable from the source text alone.
+right fix is a project-local pre-flight validator, not the debugger.
+`2068-Leap/tools/check_basic_source.py` is the concrete example (built from
+`nchiker/2068-Leap` issue #3, "a pre-flight dialect validator, in the spirit
+of zmakebas+"): of the four patterns issue #3 named, two (single-letter
+variable names, the `PRINT` string;numeric pattern) turned out to already
+be validated authoritatively by that project's own real whole-program
+checker (`rom/exrom_checker.asm`) — reimplementing those in Python would
+only add a second, driftable copy of logic the real parser already owns
+correctly. The tool only checks what that real checker's own source says it
+deliberately does NOT validate (`DIM` bounds, the label-table byte budget).
+Before writing a new project-local checker, read the target project's own
+static-checker source first — duplicate only what it doesn't already cover.
 That validator belongs in the project it validates (each TS2068 dialect —
 2068-Leap, 2068-Forth, structured-basic-poc — differs), not in this
 cross-project debugging skill.
