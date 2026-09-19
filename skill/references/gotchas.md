@@ -1,0 +1,100 @@
+# Hard-won gotchas
+
+Each of these caused a real, confusing failure during actual debugging
+sessions before being understood or fixed. Read this before assuming
+something is broken in the ROM you're investigating rather than in how you're
+driving the tool.
+
+## Keyboard injection while paused (see SKILL.md's main section)
+
+The single most time-wasting one: `run()`/`run_until()` leave the emulator
+paused, and injecting keystrokes while paused does nothing visible at all.
+`ts2068-debug` now raises `ControllerError` instead of failing silently, but
+if you ever see that error, the fix is always `resume()` first, not a bug in
+your reproduction.
+
+## `send-keys-ascii` truncates past 19 codes
+
+ZRCP caps any single command at `REMOTE_MAX_PARAMETERS_COMMAND=20` total
+arguments. `send-keys-ascii <delay> <code1> <code2> ...` counts the delay as
+one of them, leaving 19 key codes per call — anything past the 19th character
+in one call is silently dropped, never typed. `ts2068-debug key TEXT`
+(`send_keys_ascii()`) already chunks into ≤19-code batches to stay correct,
+but for typed program text prefer `type`/`type_line()`, which uses
+`send-keys-string` instead and isn't subject to this cap at all.
+
+## Screenshots must be `.bmp`
+
+ZEsarUX's `save-screen` only ever writes BMP. Ask for `.png` or any other
+extension and you get an empty, non-error reply and *no file at all* — not a
+rejected command, a silent no-op. `ts2068-debug screenshot`/`save_screen()`
+now reject non-`.bmp` paths up front and verify the file was actually
+created, but the underlying lesson generalizes: ZRCP commands can succeed at
+the protocol level (empty reply, no "Error" prefix) while doing nothing
+useful. Don't treat "no error" as "it worked" for anything file-producing —
+check the actual result.
+
+## A large bounded run can take real wall-clock seconds
+
+ZEsarUX runs at hardware-accurate Z80 speed by default. A `run
+--max-instructions 5000000` genuinely took ~14 seconds of real time in one
+session — that's not a hang in the tool, that's ~3.5M T-states of emulated
+CPU time elapsing at roughly the rate a real TS2068 would take. `run()`
+scales its own socket timeout to the requested instruction count so this
+doesn't get mistaken for a broken connection, but budget for it: don't reach
+for the largest instruction bound "to be safe" if a much smaller one already
+reaches your target — bounded execution is about safety, not about
+maximizing the limit.
+
+## Never launch Fuse's GUI mid-session
+
+Fuse (the other common ZX Spectrum emulator, used by some of these projects'
+own older smoke-test scripts) opens a real window. If `DISPLAY` happens to
+point at the operator's actual desktop rather than a genuine offscreen/Xvfb
+display, that window steals keyboard focus on their real machine — this has
+actually happened and interrupted a human mid-session. `ts2068-debug`/ZEsarUX
+runs headless (`--vo null --ao null`) specifically to avoid this class of
+problem; that's part of why it exists as an alternative to Fuse-based tooling
+for anything interactive. If a project's own `make test` still shells out to
+a Fuse-based script, that's fine to run as an existing, unmodified regression
+suite — just don't reach for Fuse yourself for new investigation, and if you
+do run that suite, verify what `DISPLAY` actually resolves to first.
+
+## Isolate concurrent sessions with `TS2068_DEBUG_STATE_DIR`
+
+CLI session state (host/port/PID/symbols) lives in `~/.ts2068-debug/state.json`
+by default — a single shared file. If a regression suite or another
+agent/session might already have a live `ts2068-debug` session running,
+starting your own without isolating it will stomp on that shared state file
+and confuse both sessions about which ZEsarUX process they're actually
+talking to. Use a scratch directory and a distinct port:
+
+```bash
+TS2068_DEBUG_STATE_DIR=/tmp/ts2068-debug-scratch ts2068-debug --json start \
+  --rom build/whatever_zesarux.bin --port 10001
+```
+
+Check `pgrep -fa zesarux` before starting a session if you suspect something
+else might already be running against the same or a related ROM.
+
+## Interrupt state and border color are structured data, not just text
+
+`regs` now includes `IM`, `IFF1`/`IFF2` (as "set"/"clear"), and `TSTATES`
+when present — these used to be silently dropped because ZRCP emits them as
+bare tokens (`IM1`, `IFF--`) rather than `key=value` pairs. Use them directly
+for ISR-only/flaky/timing-sensitive bug classes instead of guessing from PC
+alone.
+
+`timex` includes `border`/`port_fe` — many of these projects' own smoke-test
+ROMs signal PASS/FAIL by writing a border color (commonly 4=green pass,
+2=red fail) to the ULA port and halting. Read that field directly instead of
+screenshotting and eyeballing a pixel color; it's exactly how
+`2068-Leap/tools/run_smoke_rom_tests.sh` was rewritten to stop depending on
+Fuse/X11 screenshots entirely.
+
+## If none of this explains what you're seeing
+
+That's a real signal, not a dead end. If ZEsarUX can clearly do something
+(check `docs/zesarux-analysis.md` in `~/ts2068-debug` for what ZRCP exposes)
+and `ts2068-debug` doesn't expose it cleanly, that's a harness gap worth
+fixing at the source — see SKILL.md's closing section.

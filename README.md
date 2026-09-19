@@ -11,6 +11,12 @@ audit of what ZRCP already provides (everything required — no ZEsarUX modifica
 needed), `docs/zrcp.md` for a command cheat sheet, and `docs/testing.md` for the
 regression-test framework.
 
+`skill/` packages this tool as a Claude Code skill (see `skill/SKILL.md`) — when/why to
+reach for it, the full command reference, and hard-won gotchas from real debugging
+sessions (keyboard injection while paused, ZRCP's 20-argument keystroke cap, `.bmp`-only
+screenshots, and more). Install it as a personal skill by copying `skill/` to
+`~/.claude/skills/2068-debug/`.
+
 ## Quick start
 
 ```bash
