@@ -74,10 +74,21 @@ entry — real reverse debugging).
 ## Keyboard
 
 - `send-keys-ascii <ms> <asciicode1> [asciicode2] ...` — `ts2068-debug key "TEXT"`
-  encodes each character's ordinal, space-separated.
+  encodes each character's ordinal, space-separated. **Caps at
+  `REMOTE_MAX_PARAMETERS_COMMAND=20` total arguments** (1 delay + up to 19 codes) —
+  confirmed in ZEsarUX's `src/zrcp/remote.c`. Anything past the 19th character in a
+  single call is silently dropped, never typed. `Ts2068Debug.send_keys_ascii()` chunks
+  into <=19-code batches to stay correct, but for typed program text prefer
+  `send-keys-string` below.
+- `send-keys-string <ms> <string>` — takes the rest of the command line as one string,
+  not subject to the 20-argument cap. `ts2068-debug type "TEXT"` (`type_line()`/
+  `type_program()`) uses this per line, followed by an explicit ENTER, and is the
+  reliable way to enter multi-line BASIC/Forth programs. Line-oriented — no embedded
+  `\n`/`\r` in a single call.
 - `send-keys-event <key> <event> [nomenu]` — named-key press/release, values from the
-  `util_teclas` enum in ZEsarUX's `utils.h` (arrows, ENTER, etc.) — the right primitive
-  for discrete key presses rather than ASCII text.
+  `util_teclas` enum in ZEsarUX's `utils.h` (arrows, ENTER, BACKSPACE, etc.) — the right
+  primitive for discrete key presses rather than ASCII text. `ts2068-debug press NAME`
+  (`press_key()`) wraps this as a press-then-release with a configurable hold time.
 - `set-ui-io-ports` — raw 8-row keyboard matrix + joystick byte, for cases needing exact
   simultaneous key combinations.
 

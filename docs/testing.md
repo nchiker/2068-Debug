@@ -28,7 +28,8 @@ from ts2068_debug.testrunner import RegressionTest, expect, run_tests, summarize
 def cursor_left_test(dbg):
     dbg.pause()
     dbg.run_until("editor_ready")
-    dbg.send_keys_ascii("\x08")  # or send-keys-event for a real LEFT arrow
+    dbg.press_key("LEFT")  # named-key press/release via send-keys-event; use
+    # send_keys_ascii()/type_line() only for ASCII text, not discrete key presses
     cursor_x = int.from_bytes(dbg.read_memory("cursor_x", 1), "little")
     expect(dbg, "cursor_x after LEFT", cursor_x, 0)
 

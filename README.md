@@ -67,7 +67,9 @@ Every command accepts `--json` for machine-readable output, e.g.:
 | `watch ADDRESS [--type read\|write\|readwrite] [--items N]` | memory watchpoint |
 | `watchpoints` | list active memory watchpoints |
 | `trace [--last N]` | bounded circular CPU-history dump, symbol-resolved |
-| `key TEXT [--delay-ms N]` | inject ASCII keystrokes |
+| `key TEXT [--delay-ms N]` | inject ASCII keystrokes (chunked to stay under ZRCP's 20-argument command cap) |
+| `press NAME [--hold-ms N]` | press+release a named key (ENTER, LEFT, BACKSPACE, ... — see `Ts2068Debug.KEY_CODES`) |
+| `type TEXT` | type one or more lines (`\n`-separated) via `send-keys-string`, pressing ENTER after each — the reliable way to enter BASIC/Forth programs |
 | `timex` | decoded HOME/EXROM/DOCK + video + AY-3-8912 state |
 | `screenshot PATH` | save a real rendered BMP |
 | `screen-hash` | deterministic SHA-256 of the rendered screen, for regression tests |
@@ -102,8 +104,15 @@ live-verified — see `tests/test_integration_testrunner.py` and `docs/zesarux-a
 §5b for captured live protocol traces. No ZEsarUX source modifications were required for
 any of it.
 
+`key` (`send-keys-ascii`) silently truncates past ZRCP's `REMOTE_MAX_PARAMETERS_COMMAND=20`
+total arguments (19 key codes per delay), confirmed against ZEsarUX source and found while
+typing a multi-line BASIC program that never appeared on screen. `send_keys_ascii()` now
+chunks into <=19-code batches to stay correct for short bursts, but `type`/`type_line`/
+`type_program` (via `send-keys-string`, not subject to the cap) are the reliable primitives
+for entering program text; `press`/`press_key()` (via `send-keys-event`) handles discrete
+named-key presses like ENTER/arrows/BACKSPACE.
+
 Not yet built: a `wait <condition>` primitive for the test DSL described in the original
 spec (currently expressed directly in Python via `run_until`/polling `read_memory` inside
 a test body, which covers the same need); joystick input automation (explicitly
-deferred by the original requirements); a dedicated `type` command distinct from `key`
-(ASCII injection via `key` already covers typed BASIC/Forth text).
+deferred by the original requirements).
