@@ -69,6 +69,9 @@ Every command accepts `--json` for machine-readable output, e.g.:
 | `run [--max-instructions N] [--until SYMBOL_OR_ADDR]` | bounded run, optionally to a target |
 | `regs` | registers, PC resolved to nearest symbol |
 | `mem ADDRESS LENGTH` | read memory (symbol or numeric address) |
+| `mem-write ADDRESS HEX_BYTES` | write raw bytes (e.g. `mem-write 32768 deadbeef`) — force a state, patch a fixture, without going through typed program input |
+| `set-register REG VALUE` | set a register directly (e.g. `set-register HL 0x1234`) |
+| `disassemble [ADDRESS] [--lines N]` | disassemble at a symbol/address, or the current PC if omitted |
 | `break TARGET [--index N]` | set a breakpoint (condition `PC=<addr>H` under the hood) |
 | `watch ADDRESS [--type read\|write\|readwrite] [--items N]` | memory watchpoint |
 | `watchpoints` | list active memory watchpoints |
@@ -115,6 +118,13 @@ with Ts2068Debug(zesarux_install_dir, romfile=rom_path) as dbg:
     print(dbg.get_registers().values)
 ```
 
+`wait_until(predicate, max_polls=100, instructions_per_poll=10_000)` formalizes the
+"bounded run, check real state, repeat" pattern instead of leaving every caller to
+hand-roll it: `predicate` takes the `Ts2068Debug` instance (so it can call
+`read_memory()`, `get_registers()`, etc.) and `wait_until` keeps running bounded chunks
+until it returns true or the total poll budget (`max_polls * instructions_per_poll`,
+still explicitly bounded) is exhausted, at which point it raises `ControllerError`.
+
 ## Status
 
 Milestone 1 (connect/reset/pause/step/regs/mem) is fully implemented and verified
@@ -134,7 +144,6 @@ chunks into <=19-code batches to stay correct for short bursts, but `type`/`type
 for entering program text; `press`/`press_key()` (via `send-keys-event`) handles discrete
 named-key presses like ENTER/arrows/BACKSPACE.
 
-Not yet built: a `wait <condition>` primitive for the test DSL described in the original
-spec (currently expressed directly in Python via `run_until`/polling `read_memory` inside
-a test body, which covers the same need); joystick input automation (explicitly
-deferred by the original requirements).
+Not yet built: joystick input automation (explicitly deferred by the original
+requirements, and no project using this tool has exercised joystick input yet —
+build it if and when a real need surfaces, not speculatively).

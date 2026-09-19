@@ -216,6 +216,39 @@ class Ts2068Debug:
         self._zrcp.command("set-breakpoint 1")  # clear condition -> disabled
         return self.get_registers()
 
+    def wait_until(
+        self,
+        predicate,
+        max_polls: int = 100,
+        instructions_per_poll: int = 10_000,
+    ) -> int:
+        """Poll `predicate(self)` between bounded runs until it's true.
+
+        Formalizes a pattern this project's own test bodies and debugging sessions
+        have repeatedly hand-rolled: bounded `run()` in a loop, checking real state
+        (a memory value, a register, a symbol) after each chunk instead of guessing
+        how long something takes. Still bounded overall -- the total instruction
+        budget is `max_polls * instructions_per_poll`, just spent in checkpoints
+        instead of one lump, so a wrong prediction fails fast and cheaply rather
+        than burning the whole budget before you find out.
+
+        `predicate` takes this Ts2068Debug instance so it can call read_memory(),
+        get_registers(), etc. Returns the number of instructions actually run.
+        Raises ControllerError if the condition never becomes true.
+        """
+        total = 0
+        for _ in range(max_polls):
+            if predicate(self):
+                return total
+            self.run(max_instructions=instructions_per_poll)
+            total += instructions_per_poll
+        if predicate(self):
+            return total
+        raise ControllerError(
+            f"wait_until: condition not satisfied within {total} total bounded "
+            f"instructions ({max_polls} polls of {instructions_per_poll} each)"
+        )
+
     # -- inspection ----------------------------------------------------
 
     def get_registers(self) -> Registers:

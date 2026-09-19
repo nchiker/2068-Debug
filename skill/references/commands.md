@@ -48,6 +48,9 @@ SKILL.md's keyboard-injection section for why this matters).
 |---|---|
 | `regs` | registers, PC resolved to nearest symbol; includes interrupt state (`IM`, `IFF1`/`IFF2` as "set"/"clear") and `VPS`/`TSTATES` when present |
 | `mem ADDRESS LENGTH` | read memory (symbol or numeric address) |
+| `mem-write ADDRESS HEX_BYTES` | write raw bytes (e.g. `mem-write 32768 deadbeef`) — force a state or set up a fixture directly, not only through typed program input |
+| `set-register REG VALUE` | set a register directly (e.g. `set-register HL 0x1234`) |
+| `disassemble [ADDRESS] [--lines N]` | disassemble at a symbol/address, or the current PC if omitted |
 | `trace [--last N]` | bounded circular CPU-history dump, symbol-resolved |
 | `timex` | decoded HOME/EXROM/DOCK memory paging + video mode + AY-3-8912 state, plus `port_fe`/`border` (the ULA border-color port's low 3 bits) |
 
@@ -107,3 +110,22 @@ with Ts2068Debug(zesarux_install_dir, romfile=rom_path) as dbg:
 `type_program(lines)` types a whole list of lines, each followed by ENTER.
 `send_keys_ascii`/`press_key`/`type_line` all raise `ControllerError` if
 called while the emulator is paused.
+
+`write_memory(address, data: bytes)` writes raw bytes (the CLI's `mem-write`).
+`set_register(name, value)` and `disassemble(address=None, lines=1)` are also
+Python-API/CLI (`set-register`, `disassemble`) — `disassemble` resolves a
+symbol name the same way every other address-taking method here does.
+
+`wait_until(predicate, max_polls=100, instructions_per_poll=10_000)` formalizes
+"bounded run, check real state, repeat" instead of leaving you to hand-roll a
+polling loop each time — `predicate` takes the `Ts2068Debug` instance:
+
+```python
+dbg.wait_until(
+    lambda d: d.resolve_address(d.get_registers().values["PC"]).startswith("IO_READ_KEY"),
+    max_polls=20, instructions_per_poll=500_000,
+)
+```
+
+Still bounded overall (`max_polls * instructions_per_poll`); raises
+`ControllerError` if the condition never becomes true within that budget.
