@@ -25,6 +25,13 @@ class ZRCPClient:
         self.timeout = timeout
         self._sock: socket.socket | None = None
         self._buf = b""
+        # Ground truth for whether the emulator is paused (cpu-step mode), read
+        # straight off which prompt suffix ZEsarUX actually sent -- not a locally
+        # tracked assumption. Set on connect() (from the startup banner) and kept
+        # current by every reply after that, so it's correct even for a caller that
+        # attaches fresh each invocation (e.g. one `ts2068-debug` CLI call per
+        # process) with no memory of prior calls in this session.
+        self.in_step_mode = False
 
     def connect(self, retries: int = 30, retry_delay: float = 0.2) -> None:
         last_err = None
@@ -65,6 +72,7 @@ class ZRCPClient:
                 if idx != -1 and self._buf.endswith(suffix.encode("ascii")):
                     text = self._buf[:idx].decode("utf-8", errors="replace")
                     self._buf = b""
+                    self.in_step_mode = suffix == "command@cpu-step> "
                     return text.strip("\n")
             try:
                 chunk = self._sock.recv(65536)

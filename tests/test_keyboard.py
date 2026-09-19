@@ -12,6 +12,10 @@ from ts2068_debug.controller import Ts2068Debug
 def _make_debug_with_mock_zrcp():
     dbg = Ts2068Debug.__new__(Ts2068Debug)
     dbg._zrcp = MagicMock()
+    # _in_step_mode reads straight off _zrcp.in_step_mode (ground truth from the
+    # real ZRCP prompt suffix); a bare MagicMock attribute is truthy by default,
+    # which would make every keyboard call below look "paused" to _require_running.
+    dbg._zrcp.in_step_mode = False
     return dbg
 
 
@@ -45,3 +49,25 @@ def test_type_line_rejects_embedded_newline():
         assert False, "expected ControllerError"
     except Exception as exc:
         assert "newline" in str(exc)
+
+
+def test_keyboard_calls_refuse_while_paused():
+    # run()/run_until() leave the emulator in cpu-step mode (paused) when they
+    # return -- send-keys-* commands sent while paused update ZEsarUX's keyboard
+    # matrix but the ROM never scans it (the Z80 clock isn't ticking), so the
+    # keystroke silently goes nowhere. Confirmed live, independently, twice in the
+    # same debugging session before being traced to this. Must fail loud instead.
+    dbg = _make_debug_with_mock_zrcp()
+    dbg._zrcp.in_step_mode = True
+
+    for call in (
+        lambda: dbg.send_keys_ascii("A"),
+        lambda: dbg.press_key("ENTER"),
+        lambda: dbg.type_line("PRINT 1"),
+    ):
+        try:
+            call()
+            assert False, "expected ControllerError while paused"
+        except Exception as exc:
+            assert "paused" in str(exc)
+    dbg._zrcp.command.assert_not_called()

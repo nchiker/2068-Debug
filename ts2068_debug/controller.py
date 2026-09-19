@@ -88,9 +88,16 @@ class Ts2068Debug:
         self.max_run_instructions = max_run_instructions
         self._proc = ZEsarUXProcess(install_dir, port=port, romfile=romfile, machine=machine)
         self._zrcp = ZRCPClient(port=port)
-        self._in_step_mode = False
         self._breakpoints_enabled = False
         self.symbols = SymbolTable()
+
+    @property
+    def _in_step_mode(self) -> bool:
+        # Ground truth lives on the ZRCP client (which prompt suffix it last saw),
+        # not a locally tracked assumption -- correct even for a fresh object that
+        # just attached to an already-running, already-paused-or-not session (e.g.
+        # one `ts2068-debug` CLI invocation per process).
+        return self._zrcp.in_step_mode
 
     # -- lifecycle -----------------------------------------------------
 
@@ -147,7 +154,8 @@ class Ts2068Debug:
                 raise
             self._zrcp.command("close-all-menus")
             self._zrcp.command("enter-cpu-step")
-        self._in_step_mode = True
+        # No manual bookkeeping needed: self._in_step_mode reads straight off the
+        # prompt suffix the command above just got back.
 
     def _ensure_breakpoints_enabled(self) -> None:
         # ZRCP's enable-breakpoints errors "Already enabled" on a second call within
@@ -171,7 +179,6 @@ class Ts2068Debug:
     def resume(self) -> None:
         if self._in_step_mode:
             self._zrcp.command("exit-cpu-step")
-            self._in_step_mode = False
 
     def step(self, count: int = 1) -> Registers:
         self._ensure_step_mode()
@@ -324,7 +331,32 @@ class Ts2068Debug:
         "CAPS_LOCK": 147, "COMMA": 148, "PERIOD": 149,
     }
 
+    def _require_running(self, action: str) -> None:
+        """Refuse to inject input while the emulator is paused (cpu-step mode).
+
+        Found live (confirmed independently twice in the same session): send-keys-*
+        commands only update ZEsarUX's keyboard-matrix state -- the ROM code that
+        actually scans that matrix and echoes a character to screen only executes
+        while the Z80 clock is ticking. run()/run_until() leave the emulator PAUSED
+        in cpu-step mode when they return (that's how bounded execution is
+        implemented), so a caller who reasonably assumes "I just ran it, it's
+        presumably still running" gets a silent no-op: no error, no exception,
+        nothing on screen, and no way to tell a real failure from their own mistake.
+        Fail loud instead -- call resume() first (see docs/zrcp.md's keyboard
+        section for why, and note resume() itself is a deliberate, explicit action,
+        not an unbounded run this method should trigger on the caller's behalf).
+        """
+        if self._in_step_mode:
+            raise ControllerError(
+                f"cannot {action}: the emulator is paused (cpu-step mode). "
+                "run()/run_until() leave it paused when they return; keystrokes "
+                "sent while paused are silently never scanned by the ROM. Call "
+                "resume() first, inject the keys, then re-pause if you need to "
+                "inspect frozen state afterward."
+            )
+
     def send_keys_ascii(self, text: str, delay_ms: int = 100) -> None:
+        self._require_running("send keys")
         codes = [str(ord(c)) for c in text]
         for i in range(0, len(codes), self._SEND_KEYS_ASCII_CHUNK):
             chunk = " ".join(codes[i : i + self._SEND_KEYS_ASCII_CHUNK])
@@ -332,6 +364,7 @@ class Ts2068Debug:
 
     def press_key(self, name: str, hold_ms: int = 80) -> None:
         """Press and release a named (non-ASCII) key, e.g. ENTER, LEFT, BACKSPACE."""
+        self._require_running("press a key")
         code = self.KEY_CODES.get(name.upper())
         if code is None:
             raise ControllerError(f"unknown key name: {name!r} (known: {sorted(self.KEY_CODES)})")
@@ -351,6 +384,7 @@ class Ts2068Debug:
         """
         import time as _time
 
+        self._require_running("type a line")
         if "\n" in text or "\r" in text:
             raise ControllerError("type_line() text must not contain newlines; use type_program()")
         if text:
@@ -366,7 +400,28 @@ class Ts2068Debug:
     # -- screen ------------------------------------------------------------
 
     def save_screen(self, path: str) -> None:
+        """Save the rendered screen as a BMP.
+
+        ZEsarUX's `save-screen` only writes `.bmp` (confirmed live: a `.png` path
+        gets an empty, non-error reply and no file at all -- silent no-op, not a
+        rejected command). Enforce the extension and verify the file actually
+        landed, rather than letting callers get a false "status": "ok" for a
+        screenshot that was never written.
+        """
+        from pathlib import Path
+
+        p = Path(path)
+        if p.suffix.lower() != ".bmp":
+            raise ControllerError(
+                f"save_screen path must end in .bmp (ZEsarUX only writes BMP; "
+                f"got {path!r})"
+            )
         self._zrcp.command(f"save-screen {path}")
+        if not p.is_file():
+            raise ControllerError(
+                f"save-screen reported success but {path} was not created "
+                f"(check the directory exists and is writable by the ZEsarUX process)"
+            )
 
     def screen_hash(self) -> str:
         """Deterministic hash of the rendered screen, for regression testing."""
