@@ -26,6 +26,18 @@ match the ABI contract) doesn't need a running emulator — use normal file
 reading tools for that. Reach for `ts2068-debug` once you need to know what
 the machine actually *does*, not just what the source says it should do.
 
+If a bug turns out to be a known, purely static, checkable pattern in a
+project's own BASIC/Forth dialect — not a real interpreter defect — the
+right fix is a project-local pre-flight validator, not the debugger. See
+`nchiker/2068-Leap` issue #3 ("Idea: a pre-flight dialect validator, in the
+spirit of zmakebas+") for the concrete example: single-letter variable
+names, 0-indexed `DIM`, a fixed label-table budget, and one syntactic
+`PRINT` pattern were all discovered by injecting and running a program
+under `ts2068-debug` when each is checkable from the source text alone.
+That validator belongs in the project it validates (each TS2068 dialect —
+2068-Leap, 2068-Forth, structured-basic-poc — differs), not in this
+cross-project debugging skill.
+
 ## Setup
 
 The tool is a pip-installed CLI + Python package:
