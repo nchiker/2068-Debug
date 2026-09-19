@@ -367,10 +367,19 @@ class Ts2068Debug:
         raw = self.get_io_ports()
         ff = self._extract_hex_field(raw, "Timex FF port")
         f4 = self._extract_hex_field(raw, "Timex F4 port")
+        fe = self._extract_hex_field(raw, "Spectrum FE port")
         result = {
             "machine": "TS2068",
             "raw": raw,
         }
+        if fe is not None:
+            # Border/EAR/MIC port; low 3 bits are the last-written border color
+            # (standard Spectrum ULA encoding) -- e.g. this project's own smoke
+            # ROMs signal PASS/FAIL by writing 4 (green) or 2 (red) here before
+            # halting. Exposed numerically so callers don't have to regex the
+            # raw text or screenshot-and-decode a pixel color themselves.
+            result["port_fe"] = fe
+            result["border"] = fe & 0x07
         if ff is not None and f4 is not None:
             ex_rom_selected = bool(ff & 0x80)
             blocks = []
