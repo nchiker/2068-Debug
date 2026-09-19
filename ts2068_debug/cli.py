@@ -95,6 +95,18 @@ def main(argv=None) -> int:
     p_mem.add_argument("address")
     p_mem.add_argument("length", type=int)
 
+    p_mem_write = sub.add_parser("mem-write")
+    p_mem_write.add_argument("address")
+    p_mem_write.add_argument("hex_bytes", help="raw bytes as hex, e.g. 3E05 for two bytes")
+
+    p_setreg = sub.add_parser("set-register")
+    p_setreg.add_argument("register", help="e.g. PC, HL, A")
+    p_setreg.add_argument("value", help="decimal or 0x-prefixed hex")
+
+    p_disasm = sub.add_parser("disassemble")
+    p_disasm.add_argument("address", nargs="?", default=None, help="symbol or address; omit for current PC")
+    p_disasm.add_argument("--lines", type=int, default=1)
+
     p_break = sub.add_parser("break")
     p_break.add_argument("target")
     p_break.add_argument("--index", type=int, default=1)
@@ -209,6 +221,21 @@ def main(argv=None) -> int:
                     {"status": "ok", "address": args.address, "length": args.length, "hex": hex_str},
                     hex_str,
                 )
+            elif args.cmd == "mem-write":
+                data = bytes.fromhex(args.hex_bytes)
+                dbg.write_memory(args.address, data)
+                _emit(
+                    args.json,
+                    {"status": "ok", "address": args.address, "length": len(data)},
+                    "written",
+                )
+            elif args.cmd == "set-register":
+                value = int(args.value, 0)
+                dbg.set_register(args.register, value)
+                _emit(args.json, {"status": "ok", "register": args.register, "value": value}, "set")
+            elif args.cmd == "disassemble":
+                reply = dbg.disassemble(address=args.address, lines=args.lines)
+                _emit(args.json, {"status": "ok", "reply": reply}, reply)
             elif args.cmd == "break":
                 dbg.set_breakpoint(args.index, args.target)
                 _emit(args.json, {"status": "ok", "index": args.index, "target": args.target}, "breakpoint set")

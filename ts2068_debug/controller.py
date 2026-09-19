@@ -229,10 +229,25 @@ class Ts2068Debug:
         reply = self._zrcp.command(f"read-memory {addr} {length}").strip()
         return bytes.fromhex(reply)
 
-    def disassemble(self, address: Optional[int] = None, lines: int = 1) -> str:
+    def write_memory(self, address, data: bytes) -> None:
+        """Write raw bytes via write-memory-raw.
+
+        ZRCP has supported this since this project's own analysis pass
+        (docs/zesarux-analysis.md), but nothing ever called it -- a debugger
+        that can only read memory can't force a specific state to test a
+        branch or set up a fixture directly, only through typed program input.
+        """
+        addr = self._resolve_symbol_or_address(address)
+        self._zrcp.command(f"write-memory-raw {addr} {data.hex()}")
+
+    def disassemble(self, address=None, lines: int = 1) -> str:
         if address is None:
             return self._zrcp.command(f"disassemble {lines}" if lines != 1 else "disassemble")
-        return self._zrcp.command(f"disassemble {address} {lines}")
+        # Every other address-taking command (read/write_memory, breakpoints) resolves a
+        # symbol name here; this one previously passed the raw string straight to ZRCP,
+        # which needs a numeric address -- would fail immediately on `disassemble SYMBOL`.
+        addr = self._resolve_symbol_or_address(address)
+        return self._zrcp.command(f"disassemble {addr} {lines}")
 
     def get_io_ports(self) -> str:
         return self._zrcp.command("get-io-ports")
