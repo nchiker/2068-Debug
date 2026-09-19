@@ -92,6 +92,43 @@ screenshotting and eyeballing a pixel color; it's exactly how
 `2068-Leap/tools/run_smoke_rom_tests.sh` was rewritten to stop depending on
 Fuse/X11 screenshots entirely.
 
+## Reset does not mean what it sounds like
+
+Two separate, both real, both found while porting a 2068-Leap test-suite
+harness off Fuse:
+
+1. **`reset --hard` (ZRCP `hard-reset-cpu`) does not reset PC/SP/AF at
+   all.** Confirmed directly against the raw ZRCP socket, bypassing this
+   client entirely: issuing `hard-reset-cpu` while paused left every
+   register exactly as it was. Only plain `reset` (`reset-cpu`, the
+   default, `hard=False`) actually sets `PC=0000 SP=ffff AF=ffff IM0`,
+   matching real Z80 RESET semantics. Don't reach for `--hard` expecting
+   a "more thorough" reset for this purpose — it's a different, narrower
+   operation (exactly what it resets besides not-the-CPU-registers isn't
+   pinned down here; treat it as unrelated to "get back to a known CPU
+   state" until proven otherwise).
+
+2. **Even a correct (soft) `reset` issued while the machine is still
+   free-running races.** ZEsarUX keeps running in real time between your
+   `reset` command and whatever you do next (see "hardware-accurate
+   speed" above) — for a target deep in a converging loop this doesn't
+   matter, but a ONE-SHOT target executed only once during a short,
+   linear boot sequence (a fixture harness's own injection point right
+   before its first real subroutine call, say) can reproducibly get
+   missed: `run_until()`/`run --until` landed past it every single time
+   in testing, never at it. Not a timing fluke — reproduced across many
+   independent sessions.
+
+**Fix**: `pause()` FIRST, then reset — removes the race entirely, since a
+command issued while already in cpu-step mode is an ordinary synchronous
+round trip with no free-running gap before your next action. This exact
+sequence is now `reset_to_known_state()` / CLI `reset-known-state`: pause,
+soft-reset, return the post-reset registers so you can assert `PC == 0`
+directly. Use it before arming a breakpoint on anything reached only
+once, early, during boot — `run_until()` alone is fine for anything the
+CPU loops back into repeatedly (an idle/command loop, a keyboard-wait
+state), where missing the first pass costs nothing.
+
 ## If none of this explains what you're seeing
 
 That's a real signal, not a dead end. If ZEsarUX can clearly do something

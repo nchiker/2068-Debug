@@ -78,6 +78,13 @@ def main(argv=None) -> int:
     sub.add_parser("stop")
     p_reset = sub.add_parser("reset")
     p_reset.add_argument("--hard", action="store_true")
+    sub.add_parser(
+        "reset-known-state",
+        help="pause first, then a plain (soft) reset -- the only sequence "
+             "that reliably lands on a deterministic PC=0000 rather than "
+             "racing the machine's free-running boot; see controller.py's "
+             "reset_to_known_state() and gotchas.md",
+    )
 
     p_run = sub.add_parser("run")
     p_run.add_argument("--max-instructions", type=int, default=None)
@@ -191,6 +198,12 @@ def main(argv=None) -> int:
             if args.cmd == "reset":
                 dbg.reset(hard=args.hard)
                 _emit(args.json, {"status": "ok"}, "reset")
+            elif args.cmd == "reset-known-state":
+                regs = dbg.reset_to_known_state()
+                out = _registers_json(regs)
+                if "PC" in regs.values:
+                    out["symbol"] = dbg.resolve_address(regs.values["PC"])
+                _emit(args.json, out, regs.raw)
             elif args.cmd == "run":
                 if args.until:
                     regs = dbg.run_until(args.until, max_instructions=args.max_instructions)

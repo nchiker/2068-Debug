@@ -171,7 +171,51 @@ class Ts2068Debug:
         self._breakpoints_enabled = True
 
     def reset(self, hard: bool = False) -> None:
+        # `hard=True` (ZRCP `hard-reset-cpu`) is a documented trap, not a
+        # stronger reset: confirmed directly against the raw ZRCP socket
+        # (bypassing this client entirely) that it leaves PC/SP/AF exactly
+        # as they were -- only plain `reset-cpu` (hard=False) actually
+        # sets PC=0000, SP=ffff, AF=ffff, IM0, matching real Z80 RESET
+        # semantics. See docs/gotchas... err, skill/references/gotchas.md
+        # "Reset does not mean what it sounds like" for the full writeup
+        # and how this was found (a 2068-Leap test-suite port that needed
+        # a deterministic post-reset PC).
         self._zrcp.command("hard-reset-cpu" if hard else "reset-cpu")
+
+    def reset_to_known_state(self) -> Registers:
+        """Pause FIRST, then a plain (soft) reset -- the only sequence
+        that reliably lands on a deterministic, real post-reset state
+        (PC=0000 etc, confirmed live) rather than racing the machine's
+        own free-running boot. Always uses the soft reset regardless of
+        the `hard=` option `reset()` exposes: `hard-reset-cpu` is the
+        trap documented on `reset()` above -- it does not touch PC/SP at
+        all, so it cannot produce a "known state" by definition.
+
+        Why this needs to be a named, separate method rather than baked
+        silently into `start()`/`reset()`: connecting via ZRCP does not
+        itself pause the CPU, and ZEsarUX (correctly, by design -- see
+        `run`'s own "hardware-accurate speed" gotcha) keeps running in
+        real time the whole while. `reset()` issued while still
+        free-running races: the CPU can execute many more instructions in
+        the round-trip time before your NEXT command than a short, linear
+        boot sequence needs, so a one-shot target near the very start of
+        boot (e.g. a fixture harness's own injection point immediately
+        before its first real subroutine call) can be missed even though
+        a reset was issued moments earlier. Pausing first removes the
+        race entirely: once in cpu-step mode, `reset-cpu` takes effect
+        as an ordinary synchronous command with no further free-running
+        gap before your next action. Confirmed live: without this,
+        `run_until()` on an early one-shot target reproducibly landed
+        past it every time; with it, the same target's breakpoint fired
+        correctly every time.
+
+        Returns the post-reset registers (PC should read 0000) so a
+        caller can assert on it directly instead of issuing a separate
+        get_registers() call.
+        """
+        self.pause()
+        self._zrcp.command("reset-cpu")
+        return self.get_registers()
 
     def pause(self) -> None:
         self._ensure_step_mode()

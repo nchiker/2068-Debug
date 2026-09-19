@@ -11,7 +11,8 @@ as `{"status": "error", "error": "..."}` (or a non-JSON message without
 | `start --rom PATH [--port N] [--symbols FILE ...] [--zesarux-dir DIR]` | launch headless ZEsarUX (`--vo null --ao null`, no GUI window), connect |
 | `stop` | terminate the session |
 | `status` | session/process liveness, symbol count, PID, port |
-| `reset [--hard]` | soft/hard machine reset |
+| `reset [--hard]` | soft/hard machine reset — see gotchas.md "Reset does not mean what it sounds like": `--hard` does NOT reset PC/SP/AF, and even the correct soft reset races if issued while free-running |
+| `reset-known-state` | pause, then soft-reset, then return registers — the only sequence that deterministically lands on PC=0000; use before arming a breakpoint on a one-shot early-boot target |
 
 State (host/port/PID/symbols) lives in `~/.ts2068-debug/state.json` by default.
 Set `TS2068_DEBUG_STATE_DIR` (and a distinct `--port`) to run an isolated
