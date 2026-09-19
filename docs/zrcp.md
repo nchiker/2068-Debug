@@ -92,6 +92,16 @@ entry — real reverse debugging).
 - `set-ui-io-ports` — raw 8-row keyboard matrix + joystick byte, for cases needing exact
   simultaneous key combinations.
 
+**The emulator must be free-running (not paused) for any of the above to have a visible
+effect.** `run()`/`run_until()` leave the emulator in cpu-step mode (paused) when they
+return — that's how bounded execution is implemented — and a send-keys-* command only
+updates ZEsarUX's keyboard-matrix state; the ROM code that actually scans that matrix and
+echoes a character to screen only runs while the Z80 clock is ticking. Call `resume()`
+first (`Ts2068Debug.send_keys_ascii()`/`press_key()`/`type_line()` now raise a clear
+`ControllerError` if you don't), inject the keys, then `pause()` again afterward if you
+need to inspect frozen register/memory state. Confirmed live: a keystroke sent while
+paused produces no error and no visible effect at all — not even a screen diff.
+
 ## TS2068 hardware state
 
 `get-io-ports` reports, in one call: ULA data bus, Spectrum FE port, **Timex FF port**
