@@ -17,40 +17,56 @@ sessions (keyboard injection while paused, ZRCP's 20-argument keystroke cap, `.b
 screenshots, and more). Install it as a personal skill by copying `skill/` to
 `~/.claude/skills/2068-debug/`.
 
+## Install
+
+Python 3.10+ and a local [ZEsarUX](https://github.com/chernandezba/zesarux) 13.0. Nothing else; no ZEsarUX changes
+are needed for the tool itself.
+
+```bash
+git clone https://github.com/nchiker/2068-Debug.git && cd 2068-Debug
+python3 -m pip install -e . --break-system-packages     # provides the `ts2068-debug` command
+export TS2068_DEBUG_ZESARUX_DIR=~/Applications/ZEsarUX-13.0   # default; the directory containing `zesarux`
+```
+
+A ROM whose EXROM code runs from a chunk above 1 (2068-Leap's does) needs the TS2068 EXROM-mirroring
+patch to ZEsarUX 13.0 -- see "Running a custom TS2068 ROM" in the `z80-skills` `ts2068-debug` skill
+(`skills/ts2068-debug/references/emulators.md`, also copied to `skill/references/emulators.md` here).
+
 ## Quick start
 
 ```bash
-# 1. Build the ROM (example: the ts2068rom project's own build, which already produces
-#    a ZEsarUX-shaped combined home+exrom binary):
-cd ~/ts2068rom && make
-#    -> build/ts2068rom_zesarux.bin (16384 bytes Home ROM + 8192 bytes EXROM, concatenated
-#       — see docs/zesarux-analysis.md §2 for why ZEsarUX wants exactly this shape)
+# 1. Build a ROM as a ZEsarUX-shaped combined image (16384-byte HOME + 8192-byte EXROM). Example, 2068-Leap:
+cd ~/2068-Leap && make build          # -> build/ts2068rom_zesarux.bin; symbols: build/test_basic.sym (HOME), build/exrom.sym (EXROM)
 
-# 2. Install ts2068-debug
-cd ~/ts2068-debug && python3 -m pip install -e . --break-system-packages
+# 2. Start ZEsarUX headless and connect (paths are stored absolute)
+ts2068-debug --json start --rom ~/2068-Leap/build/ts2068rom_zesarux.bin \
+  --symbols ~/2068-Leap/build/test_basic.sym --symbols ~/2068-Leap/build/exrom.sym
 
-# 3. Start ZEsarUX headless and connect
-ts2068-debug --json start \
-  --rom ~/ts2068rom/build/ts2068rom_zesarux.bin \
-  --symbols ~/ts2068rom/rom/current_test_basic.sym
+# 3. Reset deterministically, set a breakpoint and run to it
+ts2068-debug --json reset-known-state
+ts2068-debug --json run --until V2_COMMAND_LOOP --max-instructions 5000000
 
-# 4. Reset the machine
-ts2068-debug --json reset
-
-# 5. Set a breakpoint (symbol or address) and run to it
-ts2068-debug --json break editor_ready
-ts2068-debug --json run --until editor_ready
-
-# 6. Inspect registers (resolved to the nearest source symbol)
+# 4. Inspect: registers (PC symbolised), or everything useful for a hang in one call
 ts2068-debug --json regs
+ts2068-debug --json diagnose
 
-# 7. Run the regression tests (controller's own test suite; auto-skips the live
-#    integration tests if no ZEsarUX/ROM is present)
-python3 -m pytest tests/
-
-# 8. Stop
+# 5. Stop (works from any directory)
 ts2068-debug --json stop
 ```
+
+## Tests
+
+```bash
+python3 -m pytest tests/        # unit tests always run; live tests need ZEsarUX + a built ROM and skip otherwise
+```
+
+The live tests use `$TS2068_DEBUG_TEST_ROM`, else `~/2068-Leap/build/ts2068rom_zesarux.bin`; see `docs/testing.md`.
+
+## Used by 2068-Leap
+
+2068-Leap runs its headless suites through this tool and records the commit of this repository it is
+verified against in `docs/v2/TESTING.md` ("Debugging tools in this workflow"). The tool is shared with the
+other TS2068 ROM projects; keep CLI commands and `--json` shapes backward compatible.
 
 Every command accepts `--json` for machine-readable output, e.g.:
 ```json
@@ -62,7 +78,8 @@ Every command accepts `--json` for machine-readable output, e.g.:
 | Command | Purpose |
 |---|---|
 | `start --rom PATH [--port N] [--symbols FILE ...]` | launch headless ZEsarUX, connect |
-| `stop` | terminate the session |
+| `stop [--port N \| --pid P]` | terminate the session (no symbols file or original directory needed); `--port`/`--pid` stop an untracked emulator |
+| `sessions` | list running ZEsarUX ZRCP processes and whether this state directory tracks them |
 | `reset [--hard]` | soft/hard machine reset |
 | `pause` / `resume` | enter/exit cpu-step mode |
 | `step [--count N]` | single-step N opcodes |
@@ -70,6 +87,8 @@ Every command accepts `--json` for machine-readable output, e.g.:
 | `regs` | registers, PC resolved to nearest symbol |
 | `mem ADDRESS LENGTH` | read memory (symbol or numeric address) |
 | `mem-write ADDRESS HEX_BYTES` | write raw bytes (e.g. `mem-write 32768 deadbeef`) — force a state, patch a fixture, without going through typed program input |
+| `mem-snapshot NAME ADDRESS LENGTH` / `mem-diff NAME [--merge-gap N] [--update]` | save a range, then report which bytes changed since (address, nearest symbol, before/after) |
+| `diagnose [--trace N] [--stack N] [--resume]` | pause and capture registers, symbolised stack words, interrupt/banking state and recent trace in one call |
 | `set-register REG VALUE` | set a register directly (e.g. `set-register HL 0x1234`) |
 | `disassemble [ADDRESS] [--lines N]` | disassemble at a symbol/address, or the current PC if omitted |
 | `break TARGET [--index N]` | set a breakpoint (condition `PC=<addr>H` under the hood) |
@@ -89,6 +108,21 @@ Every command accepts `--json` for machine-readable output, e.g.:
 bounded `run` scales its own read timeout to the requested instruction count (real
 ZEsarUX runs at hardware-accurate speed unless configured otherwise, so a full
 2,000,000-opcode bound can legitimately take longer than a fixed short timeout).
+
+## Reliability behaviour
+
+- **Dropped or empty ZRCP replies** (seen under host load in parallel suites): read commands
+  (`regs`, `mem`, `timex`) reconnect and retry, and a reply that is still empty or short is
+  reported as an error showing the reply, not a bare `KeyError`. Commands with side effects
+  (`run`, `step`, `key`, `mem-write`) are never resent automatically.
+- **Orphaned emulators**: `start` refuses a busy port and cleans up its own emulator if ZRCP never
+  answers; `ts2068-debug sessions` lists emulators and whether this state directory tracks them;
+  `stop --port N` stops an untracked one (only a verified ZEsarUX process is ever signalled).
+
+- **Trace after the fact**: `run`/`step` switch CPU-history recording on before executing (no measurable
+  slowdown), so `trace` and `diagnose` can show the instructions leading up to a hang that has already
+  happened. Previously history started at the first `trace` call and was empty.
+- **Wrong ROM**: `start` refuses a missing `--rom` (ZEsarUX itself silently boots a default ROM instead).
 
 ## Concurrent/isolated sessions
 

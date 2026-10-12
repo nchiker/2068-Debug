@@ -177,6 +177,48 @@ target, before returning, precisely because it's designed for one-shot
 didn't expose `clear_breakpoint()` at all until this session — `break`
 existed, clearing it didn't. Now both do.)
 
+## Parallel suites: ports, load, and orphaned emulators
+
+Running several regression suites at once (one ZEsarUX per suite) works when each suite has its
+own `TS2068_DEBUG_STATE_DIR` and port. Two failure modes are harness incidents, not ROM defects:
+
+- Under heavy host load a ZRCP reply can arrive empty or the connection can drop in the middle of a
+  long suite. Read commands (`regs`, `mem`, `timex`) now reconnect and retry on their own, and a reply
+  that stays empty is reported with its text (it used to surface as `KeyError: 'registers'`).
+  Commands with side effects are never resent. If an error still gets through, rerun that suite
+  alone before counting any failure, and report the incident.
+- A crashed or killed session can leave its ZEsarUX running with parent PID 1, still holding its
+  port. (Every CLI-started emulator has parent PID 1 -- `start` exits after launching -- so PPID
+  alone does not identify an orphan.) Run `ts2068-debug sessions`: it lists each ZEsarUX ZRCP
+  process and whether this state directory tracks it. `stop --port N` stops an untracked one; only a
+  verified ZEsarUX process is ever signalled. Do not stop processes you did not start.
+- `start` now refuses a busy port (naming the owner) and removes its own emulator if ZRCP never
+  answers, so a failed start no longer leaves an orphan.
+
+`start` refuses a missing `--rom`: ZEsarUX silently boots a default ROM for a bad `--romfile`, which used to
+mean debugging the wrong ROM with a success status. `run`/`step` also switch CPU-history recording on first, so
+`trace`/`diagnose` can show a hang that already happened.
+
+`stop` needs neither the symbols file nor the directory `start` ran in (it used to fail with
+`FileNotFoundError: build/exrom.sym` from another directory). Symbol and ROM paths are stored absolute.
+
+## Keystroke injection can drop characters
+
+`type`/`key` go through ZEsarUX's keyboard matrix; the ROM's scan sees them only while it runs.
+Several V2 investigations saw an intermittent dropped or duplicated character (a different one each
+time) -- a harness timing effect, never a ROM defect. For a measurement, do not depend on typed
+text: write the line store / buffer with `mem-write` and call the routine, or read the result from
+memory. If you must type, read the result back before trusting it (`mem` of the edit buffer, or
+`screenshot`), and retype once with a larger `--char-delay-ms` before concluding anything.
+
+## Before/after comparison and one-call diagnostics
+
+- `mem-snapshot NAME ADDRESS LENGTH` before the operation, `mem-diff NAME` after: changed ranges with
+  symbols and before/after bytes, instead of two dumps compared by eye or a throwaway script.
+- `diagnose` for a hang or wrong result: pauses and captures registers, the stack as words resolved to
+  `routine+offset`, interrupt/banking state and the last executed instructions in one call. A trace
+  showing one address repeating is the signature of a `jr $` hang; the stack words show who called in.
+
 ## If none of this explains what you're seeing
 
 That's a real signal, not a dead end. If ZEsarUX can clearly do something

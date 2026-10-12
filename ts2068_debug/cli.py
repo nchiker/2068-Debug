@@ -1,6 +1,5 @@
 """ts2068-debug command-line entry point.
 
-Milestone 1 command set: start, stop, reset, run, pause, step, regs, mem, status.
 Every command supports --json for machine-readable output (see README/spec).
 """
 from __future__ import annotations
@@ -12,7 +11,8 @@ import sys
 from pathlib import Path
 
 from .controller import ControllerError, Registers, Ts2068Debug
-from .zrcp import ZRCPError
+from .process import find_zesarux_processes, is_emulator_pid, terminate_emulator
+from .zrcp import ZRCPClient, ZRCPError
 
 STATE_DIR = Path(os.environ.get("TS2068_DEBUG_STATE_DIR", str(Path.home() / ".ts2068-debug")))
 STATE_FILE = STATE_DIR / "state.json"
@@ -33,7 +33,17 @@ def _save_state(state: dict) -> None:
     STATE_FILE.write_text(json.dumps(state))
 
 
-def _attach(state: dict) -> Ts2068Debug:
+def _symbol_path(state: dict, sym_path: str) -> Path:
+    """Resolve a stored symbols path. Sessions recorded before paths were made absolute stored
+    them as typed (relative to the directory `start` ran in); resolve those against the
+    recorded `cwd` so every later command works from any directory."""
+    p = Path(sym_path)
+    if not p.is_absolute() and state.get("cwd"):
+        p = Path(state["cwd"]) / p
+    return p
+
+
+def _attach(state: dict, symbols: bool = True) -> Ts2068Debug:
     dbg = Ts2068Debug(
         install_dir=state["install_dir"],
         port=state["port"],
@@ -41,9 +51,71 @@ def _attach(state: dict) -> Ts2068Debug:
         machine=state.get("machine", "TS2068"),
     )
     dbg.start(launch=False)
-    for sym_path in state.get("symbols", []):
-        dbg.load_symbols(sym_path)
+    if symbols:
+        for sym_path in state.get("symbols", []):
+            resolved = _symbol_path(state, sym_path)
+            if not resolved.is_file():
+                dbg._zrcp.close()
+                raise ControllerError(
+                    f"symbols file not found: {resolved} (recorded at start as {sym_path!r}); "
+                    f"restart the session with an existing --symbols path"
+                )
+            dbg.load_symbols(str(resolved))
     return dbg
+
+
+def _snapshot_file(name: str) -> Path:
+    safe = "".join(c for c in name if c.isalnum() or c in "-_.")
+    if not safe or safe != name:
+        raise ControllerError(f"snapshot name {name!r} must be letters, digits, '-', '_' or '.'")
+    return STATE_DIR / "snapshots" / f"{safe}.json"
+
+
+def _stop_session(args) -> dict:
+    """Stop an emulator without touching symbols or the current directory.
+
+    Default: the session in this state directory. `--port`/`--pid`: an emulator that no
+    state file tracks (e.g. left by a crashed run) -- only a verified ZEsarUX ZRCP process
+    is ever signalled, never an arbitrary PID.
+    """
+    state = None
+    if args.port is None and args.pid is None:
+        state = _load_state()
+        port, pid = state["port"], state.get("pid")
+    else:
+        procs = find_zesarux_processes()
+        if args.pid is not None:
+            match = next((p for p in procs if p.pid == args.pid), None)
+        else:
+            match = next((p for p in procs if p.port == args.port), None)
+        if match is None:
+            raise ControllerError("no ZEsarUX ZRCP process matches that --port/--pid")
+        port, pid = match.port, match.pid
+    if port is not None:
+        client = ZRCPClient(port=port, timeout=3.0)
+        try:
+            client.connect(retries=2)
+            client.quit()
+        except ZRCPError:
+            client.close()
+    result = terminate_emulator(pid, port) if pid is not None else "not-running"
+    if state is not None or (STATE_FILE.exists() and _state_port() == port):
+        STATE_FILE.unlink(missing_ok=True)
+    return {"status": "ok", "port": port, "pid": pid, "result": result}
+
+
+def _state_pid():
+    try:
+        return json.loads(STATE_FILE.read_text()).get("pid")
+    except (OSError, ValueError):
+        return None
+
+
+def _state_port():
+    try:
+        return json.loads(STATE_FILE.read_text()).get("port")
+    except (OSError, ValueError):
+        return None
 
 
 def _emit(as_json: bool, obj: dict, human: str) -> None:
@@ -75,7 +147,14 @@ def main(argv=None) -> int:
     p_start.add_argument("--machine", default="TS2068")
     p_start.add_argument("--symbols", action="append", default=[], help="assembler .sym file (repeatable)")
 
-    sub.add_parser("stop")
+    p_stop = sub.add_parser(
+        "stop",
+        help="stop this state directory's session (needs no symbols file and works from any "
+             "directory); --port/--pid stop an untracked emulator",
+    )
+    p_stop.add_argument("--port", type=int, default=None)
+    p_stop.add_argument("--pid", type=int, default=None)
+    sub.add_parser("sessions", help="list running ZEsarUX ZRCP processes and whether this state directory tracks them")
     p_reset = sub.add_parser("reset")
     p_reset.add_argument("--hard", action="store_true")
     sub.add_parser(
@@ -105,6 +184,24 @@ def main(argv=None) -> int:
     p_mem_write = sub.add_parser("mem-write")
     p_mem_write.add_argument("address")
     p_mem_write.add_argument("hex_bytes", help="raw bytes as hex, e.g. 3E05 for two bytes")
+
+    p_msnap = sub.add_parser("mem-snapshot", help="save a memory range under NAME, to compare later with mem-diff")
+    p_msnap.add_argument("name")
+    p_msnap.add_argument("address")
+    p_msnap.add_argument("length", type=int)
+
+    p_mdiff = sub.add_parser("mem-diff", help="compare live memory with a mem-snapshot; reports changed ranges with symbols")
+    p_mdiff.add_argument("name")
+    p_mdiff.add_argument("--merge-gap", type=int, default=0, help="merge changed ranges separated by <= N unchanged bytes")
+    p_mdiff.add_argument("--update", action="store_true", help="re-baseline the snapshot to the current memory afterwards")
+
+    p_diag = sub.add_parser(
+        "diagnose",
+        help="pause and capture registers, symbolised stack, interrupt/banking state and recent trace in one call",
+    )
+    p_diag.add_argument("--trace", type=int, default=20)
+    p_diag.add_argument("--stack", type=int, default=16)
+    p_diag.add_argument("--resume", action="store_true", help="resume the emulator afterwards")
 
     p_setreg = sub.add_parser("set-register")
     p_setreg.add_argument("register", help="e.g. PC, HL, A")
@@ -164,43 +261,45 @@ def main(argv=None) -> int:
 
     try:
         if args.cmd == "start":
-            dbg = Ts2068Debug(args.zesarux_dir, port=args.port, romfile=args.rom, machine=args.machine)
+            # Stored absolute: later commands (and `stop`) may run from any directory.
+            rom = str(Path(args.rom).resolve())
+            symbols = [str(Path(sp).resolve()) for sp in args.symbols]
+            for sp in symbols:
+                if not Path(sp).is_file():
+                    raise ControllerError(f"symbols file not found: {sp}")
+            dbg = Ts2068Debug(args.zesarux_dir, port=args.port, romfile=rom, machine=args.machine)
             dbg.start(launch=True)
             state = {
                 "install_dir": args.zesarux_dir,
                 "port": args.port,
-                "romfile": args.rom,
+                "romfile": rom,
                 "machine": args.machine,
-                "symbols": args.symbols,
-                "pid": dbg._proc._proc.pid,
+                "symbols": symbols,
+                "cwd": os.getcwd(),
+                "pid": dbg._proc.pid,
             }
             _save_state(state)
             _emit(args.json, {"status": "ok", "port": args.port}, f"started on port {args.port}")
             return 0
 
         if args.cmd == "stop":
-            state = _load_state()
-            dbg = _attach(state)
-            dbg._zrcp.quit()
-            pid = state.get("pid")
-            if pid is not None:
-                import signal
-                import time as _time
+            out = _stop_session(args)
+            _emit(args.json, out, f"stopped ({out['result']})")
+            return 0
 
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                    for _ in range(25):
-                        _time.sleep(0.2)
-                        try:
-                            os.kill(pid, 0)
-                        except OSError:
-                            break
-                    else:
-                        os.kill(pid, signal.SIGKILL)
-                except OSError:
-                    pass
-            STATE_FILE.unlink(missing_ok=True)
-            _emit(args.json, {"status": "ok"}, "stopped")
+        if args.cmd == "sessions":
+            tracked = None
+            if STATE_FILE.exists():
+                tracked = _state_pid()
+            sessions = [dict(p.to_json(), tracked=(p.pid == tracked)) for p in find_zesarux_processes()]
+            _emit(
+                args.json,
+                {"status": "ok", "state_dir": str(STATE_DIR), "sessions": sessions},
+                "\n".join(
+                    f"pid {x['pid']} port {x['port']} {'tracked' if x['tracked'] else 'not tracked by ' + str(STATE_DIR)}"
+                    for x in sessions
+                ) or "no ZEsarUX ZRCP processes",
+            )
             return 0
 
         state = _load_state()
@@ -245,6 +344,36 @@ def main(argv=None) -> int:
                     {"status": "ok", "address": args.address, "length": args.length, "hex": hex_str},
                     hex_str,
                 )
+            elif args.cmd == "mem-snapshot":
+                snap = dbg.snapshot_memory(args.address, args.length)
+                path = _snapshot_file(args.name)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(snap))
+                _emit(args.json, {"status": "ok", "name": args.name, "address": snap["address"],
+                                  "length": snap["length"], "path": str(path)}, f"saved {path}")
+            elif args.cmd == "mem-diff":
+                path = _snapshot_file(args.name)
+                if not path.is_file():
+                    raise ControllerError(f"no snapshot named {args.name!r} (mem-snapshot it first)")
+                snap = json.loads(path.read_text())
+                out = dbg.diff_memory(snap, merge_gap=args.merge_gap)
+                out["status"] = "ok"
+                out["name"] = args.name
+                if args.update:
+                    path.write_text(json.dumps(dbg.snapshot_memory(snap["address"], snap["length"])))
+                _emit(
+                    args.json, out,
+                    f"{out['changed_bytes']} byte(s) changed in {len(out['ranges'])} range(s)\n" + "\n".join(
+                        f"  ${r['address']:04X} {r['symbol']} +{r['length']}: {r['before']} -> {r['after']}"
+                        for r in out["ranges"]
+                    ),
+                )
+            elif args.cmd == "diagnose":
+                out = dbg.diagnose(trace_last=args.trace, stack_words=args.stack)
+                if args.resume:
+                    dbg.resume()
+                out["status"] = "ok"
+                _emit(args.json, out, json.dumps(out, indent=2))
             elif args.cmd == "mem-write":
                 data = bytes.fromhex(args.hex_bytes)
                 dbg.write_memory(args.address, data)

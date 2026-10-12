@@ -77,7 +77,10 @@ target (usually `build/<project>_zesarux.bin`, 16384+8192 bytes concatenated
    state). Resolve the current PC to a symbol before concluding anything —
    `IO_READ_KEY.wait_hit` or a similar keyboard-wait routine means the machine
    is idling normally, not stuck; a PC repeating inside an unexpected loop is
-   the real signal.
+   the real signal. For a hang or wrong result, `diagnose` captures registers,
+   the symbolised stack (callers), interrupt/banking state and the recent trace
+   in one call; `mem-snapshot NAME ADDR LEN` before an operation and
+   `mem-diff NAME` after shows exactly which bytes it changed.
 4. **Drive the machine like an operator** when you need to reproduce
    interactive behavior — type a program in, run it, read the screen. See
    **Keyboard injection** below; there's a critical gotcha here that will
@@ -86,6 +89,8 @@ target (usually `build/<project>_zesarux.bin`, 16384+8192 bytes concatenated
    for the full CLI/Python API surface (breakpoints, watchpoints, screenshots,
    the Python API for long-lived sessions) once you know roughly what you
    need — don't load it speculatively.
+   To run a custom ROM in ZEsarUX (the qualified emulator), EightyOne or Fuse, see
+   [references/emulators.md](references/emulators.md).
 
 ## Keyboard injection: the one gotcha that will bite you
 

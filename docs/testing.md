@@ -7,11 +7,16 @@ python3 -m pytest tests/
 ```
 
 - `test_symbols.py`, `test_controller_parsing.py` — pure unit tests, no emulator needed.
-- `test_integration_live.py`, `test_integration_testrunner.py` — real end-to-end tests
-  against a live headless ZEsarUX TS2068 instance. Auto-skip if ZEsarUX or a built ROM
-  aren't present at the default paths (`~/Applications/ZEsarUX-13.0`,
-  `~/ts2068rom/build/ts2068rom_zesarux.bin`); override with
-  `TS2068_DEBUG_ZESARUX_DIR` / `TS2068_DEBUG_TEST_ROM` env vars.
+- `test_reliability.py`, `test_cli_sessions.py` — unit tests with a fake ZRCP server: retry of
+  dropped reads, no resend of side-effecting commands, memory diff, diagnose, `stop` without symbols.
+- `test_integration_live.py`, `test_integration_testrunner.py`, `test_live_v2_scenarios.py` — real
+  end-to-end tests against a live headless ZEsarUX TS2068 instance (each on a free port). The
+  scenarios cover stop-from-another-directory, busy ports, failed starts leaving no emulator,
+  untracked-emulator cleanup, and a hung program (memory diff + diagnose). Auto-skip if ZEsarUX
+  or a built ROM isn't present. Defaults: `~/Applications/ZEsarUX-13.0` and, for the ROM,
+  `$TS2068_DEBUG_TEST_ROM`, else `~/2068-Leap/build/ts2068rom_zesarux.bin` (`make build` there),
+  else `~/ts2068rom/build/ts2068rom_zesarux.bin`; override with `TS2068_DEBUG_ZESARUX_DIR` /
+  `TS2068_DEBUG_TEST_ROM`.
 
 These are the tests that actually prove the ZRCP control loop works — not mocks. Every
 capability claim in `docs/zesarux-analysis.md` was checked this way before being relied

@@ -10,17 +10,13 @@ import pytest
 
 from ts2068_debug.controller import Ts2068Debug
 
-ZESARUX_DIR = Path(os.environ.get("TS2068_DEBUG_ZESARUX_DIR", str(Path.home() / "Applications" / "ZEsarUX-13.0")))
-ROM_PATH = Path(os.environ.get("TS2068_DEBUG_TEST_ROM", str(Path.home() / "ts2068rom" / "build" / "ts2068rom_zesarux.bin")))
+from _live import LIVE_AVAILABLE, ROM_PATH, SKIP_REASON, ZESARUX_DIR, free_port
 
-pytestmark = pytest.mark.skipif(
-    not (ZESARUX_DIR / "zesarux").exists() or not ROM_PATH.exists(),
-    reason="requires a local ZEsarUX install and built TS2068 ROM",
-)
+pytestmark = pytest.mark.skipif(not LIVE_AVAILABLE, reason=SKIP_REASON)
 
 
 def test_milestone1_control_loop():
-    dbg = Ts2068Debug(str(ZESARUX_DIR), port=10199, romfile=str(ROM_PATH))
+    dbg = Ts2068Debug(str(ZESARUX_DIR), port=free_port(), romfile=str(ROM_PATH))
     dbg.start()
     try:
         dbg.reset()
@@ -48,7 +44,7 @@ def test_reset_to_known_state_gives_real_reset_registers():
     soft reset races if issued while the machine is still free-running.
     `reset_to_known_state()` (pause first, then soft-reset) must
     deterministically land on real Z80 RESET register values."""
-    dbg = Ts2068Debug(str(ZESARUX_DIR), port=10198, romfile=str(ROM_PATH))
+    dbg = Ts2068Debug(str(ZESARUX_DIR), port=free_port(), romfile=str(ROM_PATH))
     dbg.start()
     try:
         regs = dbg.reset_to_known_state()
@@ -68,7 +64,7 @@ def test_hard_reset_does_not_touch_pc(tmp_path):
     failing loudly (a good thing to notice) rather than silently -- it is
     deliberately asserting the CURRENT, confirmed-live buggy-looking
     behavior, not the behavior we'd want."""
-    dbg = Ts2068Debug(str(ZESARUX_DIR), port=10197, romfile=str(ROM_PATH))
+    dbg = Ts2068Debug(str(ZESARUX_DIR), port=free_port(), romfile=str(ROM_PATH))
     dbg.start()
     try:
         dbg.pause()

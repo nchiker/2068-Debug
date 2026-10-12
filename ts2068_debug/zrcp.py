@@ -14,6 +14,16 @@ class ZRCPError(Exception):
     """Raised when ZRCP itself reports an error, or the socket misbehaves."""
 
 
+class ZRCPTransportError(ZRCPError):
+    """The socket failed (timeout, reset, closed) -- not a ZRCP-level error reply.
+
+    Under heavy host load a reply can arrive empty or the connection can drop mid-suite
+    (seen in V2 parallel qualification runs as a bare ``KeyError: 'registers'``). These are
+    harness incidents, distinct from ZEsarUX rejecting a command, and the only class of
+    error ``command(..., retries=N)`` retries -- and only for idempotent reads.
+    """
+
+
 class ZRCPClient:
     # Default prompt is "command" (src/settings.c: remote_prompt_command_string).
     # In cpu-step mode it becomes "command@cpu-step> " instead of "command> ".
@@ -88,12 +98,16 @@ class ZRCPClient:
                     self.connect()
                 except ZRCPError:
                     pass
-                raise ZRCPError(f"timed out waiting for ZRCP reply (partial: {partial!r})") from exc
+                raise ZRCPTransportError(f"timed out waiting for ZRCP reply (partial: {partial!r})") from exc
+            except OSError as exc:
+                self.close()
+                raise ZRCPTransportError(f"ZRCP socket error while reading: {exc}") from exc
             if not chunk:
-                raise ZRCPError("ZRCP connection closed unexpectedly")
+                self.close()
+                raise ZRCPTransportError("ZRCP connection closed unexpectedly")
             self._buf += chunk
 
-    def command(self, line: str, timeout: float | None = None) -> str:
+    def command(self, line: str, timeout: float | None = None, retries: int = 0) -> str:
         """Send one command line, return its reply text with the trailing prompt stripped.
 
         `timeout`, when given, overrides the socket timeout for this call only (e.g. a
@@ -101,17 +115,40 @@ class ZRCPClient:
         default 10s). The socket's original timeout is always restored afterwards, even
         on error, so a one-off long call doesn't leak a relaxed timeout onto later short
         commands (which would turn a real hang into a long hang before it's reported).
+
+        `retries` is for IDEMPOTENT commands only (reads: get-registers, read-memory, ...).
+        On a transport failure the client reconnects and resends, up to `retries` times.
+        Never pass it for run/step/key/write commands: a dropped reply does not mean the
+        command did not execute, and resending would repeat its effect.
         """
+        attempt = 0
+        while True:
+            try:
+                return self._command_once(line, timeout)
+            except ZRCPTransportError:
+                if attempt >= retries:
+                    raise
+                attempt += 1
+                self.close()
+                time.sleep(0.2 * attempt)
+                self.connect(retries=10)
+
+    def _command_once(self, line: str, timeout: float | None) -> str:
         if self._sock is None:
             raise ZRCPError("not connected")
+        sock = self._sock
         if timeout is not None:
-            self._sock.settimeout(timeout)
+            sock.settimeout(timeout)
         try:
-            self._sock.sendall((line + "\n").encode("utf-8"))
+            try:
+                sock.sendall((line + "\n").encode("utf-8"))
+            except OSError as exc:
+                self.close()
+                raise ZRCPTransportError(f"ZRCP socket error while sending {line!r}: {exc}") from exc
             reply = self._read_until_prompt()
         finally:
-            if timeout is not None:
-                self._sock.settimeout(self.timeout)
+            if timeout is not None and self._sock is sock:
+                sock.settimeout(self.timeout)
         if reply.startswith("Error") or reply.startswith("ERROR"):
             raise ZRCPError(f"{line!r} -> {reply}")
         return reply

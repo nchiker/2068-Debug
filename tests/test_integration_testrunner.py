@@ -12,17 +12,13 @@ import pytest
 from ts2068_debug.controller import Ts2068Debug
 from ts2068_debug.testrunner import RegressionTest, expect, run_tests, summarize
 
-ZESARUX_DIR = Path(os.environ.get("TS2068_DEBUG_ZESARUX_DIR", str(Path.home() / "Applications" / "ZEsarUX-13.0")))
-ROM_PATH = Path(os.environ.get("TS2068_DEBUG_TEST_ROM", str(Path.home() / "ts2068rom" / "build" / "ts2068rom_zesarux.bin")))
+from _live import LIVE_AVAILABLE, ROM_PATH, SKIP_REASON, ZESARUX_DIR, free_port
 
-pytestmark = pytest.mark.skipif(
-    not (ZESARUX_DIR / "zesarux").exists() or not ROM_PATH.exists(),
-    reason="requires a local ZEsarUX install and built TS2068 ROM",
-)
+pytestmark = pytest.mark.skipif(not LIVE_AVAILABLE, reason=SKIP_REASON)
 
 
 def test_runner_reports_pass_and_fail_with_diagnostics():
-    dbg = Ts2068Debug(str(ZESARUX_DIR), port=10198, romfile=str(ROM_PATH))
+    dbg = Ts2068Debug(str(ZESARUX_DIR), port=free_port(), romfile=str(ROM_PATH))
     dbg.start()
     try:
 

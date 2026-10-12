@@ -7,12 +7,13 @@ docs/zesarux-analysis.md for the ZRCP commands each operation is built from.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .process import ZEsarUXProcess
+from .process import ZEsarUXProcess, find_zesarux_processes, port_in_use
 from .symbols import SymbolTable
-from .zrcp import ZRCPClient, ZRCPError
+from .zrcp import ZRCPClient, ZRCPError, ZRCPTransportError
 
 # "PC=0038" style tokens, plus bare flag tokens like IM1 / IFF-- that get-registers
 # also emits (see docs/zesarux-analysis.md §5b for a captured live example).
@@ -102,9 +103,34 @@ class Ts2068Debug:
     # -- lifecycle -----------------------------------------------------
 
     def start(self, launch: bool = True) -> None:
-        if launch:
-            self._proc.start()
-        self._zrcp.connect()
+        if not launch:
+            self._zrcp.connect()
+            return
+        if self.romfile and not Path(self.romfile).is_file():
+            # ZEsarUX does not fail on a missing --romfile: it silently boots a default ROM, so a
+            # typo would debug the wrong ROM and report success.
+            raise ControllerError(f"ROM file not found: {self.romfile}")
+        if port_in_use(self.port):
+            holder = next((p for p in find_zesarux_processes() if p.port == self.port), None)
+            who = f" (ZEsarUX pid {holder.pid})" if holder else ""
+            raise ControllerError(
+                f"ZRCP port {self.port} is already in use{who}: choose another --port, or "
+                f"stop the session that owns it (`ts2068-debug sessions`, `ts2068-debug stop --port {self.port}`)"
+            )
+        self._proc.start()
+        try:
+            self._zrcp.connect()
+        except ZRCPError as exc:
+            code = self._proc.exit_code()
+            # Never leave the emulator we just launched running with nobody tracking it:
+            # that is how orphaned ZEsarUX processes (holding their ports) accumulate.
+            self._proc.stop()
+            if code is not None:
+                raise ControllerError(
+                    f"ZEsarUX exited with code {code} before accepting ZRCP "
+                    f"(bad --rom path or machine, or the display/audio backend failed)"
+                ) from exc
+            raise ControllerError(f"ZEsarUX started but ZRCP never answered: {exc}") from exc
 
     def stop(self) -> None:
         self._zrcp.quit()
@@ -241,8 +267,21 @@ class Ts2068Debug:
 
             _time.sleep(self._RESUME_SETTLE_S)
 
+    def _record_history(self) -> None:
+        """Turn CPU history recording on before executing, so `trace`/`diagnose` have something to show.
+
+        cpu-history records only from the moment it is enabled: switched on lazily by the first
+        `trace` call, it was always empty for a failure that had already happened (a hang
+        diagnosed after the fact). Measured: no change in run speed. Never fatal.
+        """
+        try:
+            self._history_ready()
+        except ZRCPError:
+            pass
+
     def step(self, count: int = 1) -> Registers:
         self._ensure_step_mode()
+        self._record_history()
         reply = ""
         for _ in range(count):
             reply = self._zrcp.command("cpu-step")
@@ -260,6 +299,7 @@ class Ts2068Debug:
     def run(self, max_instructions: Optional[int] = None, verbose: bool = False) -> str:
         """Bounded run. NEVER runs unbounded: falls back to self.max_run_instructions."""
         self._ensure_step_mode()
+        self._record_history()
         limit = max_instructions if max_instructions is not None else self.max_run_instructions
         parts = ["run"]
         if verbose:
@@ -312,16 +352,50 @@ class Ts2068Debug:
 
     # -- inspection ----------------------------------------------------
 
+    # A ZRCP reply can arrive empty or truncated under host load (seen in parallel runs as a bare
+    # KeyError: 'registers'). Reads are idempotent, so retry them; report what came back if it
+    # keeps happening, rather than letting callers trip over a missing key.
+    _READ_RETRIES = 2
+
     def get_registers(self) -> Registers:
-        return parse_registers(self._zrcp.command("get-registers"))
+        last = ""
+        for _ in range(self._READ_RETRIES + 1):
+            last = self._zrcp.command("get-registers", retries=self._READ_RETRIES)
+            regs = parse_registers(last)
+            if "PC" in regs.values and "SP" in regs.values:
+                return regs
+        raise ControllerError(f"get-registers returned no usable register set (last reply: {last!r})")
 
     def set_register(self, register: str, value: int) -> None:
         self._zrcp.command(f"set-register {register}={value:04X}H")
 
     def read_memory(self, address, length: int) -> bytes:
         addr = self._resolve_symbol_or_address(address)
-        reply = self._zrcp.command(f"read-memory {addr} {length}").strip()
-        return bytes.fromhex(reply)
+        if length < 0 or addr + length > 0x10000:
+            raise ControllerError(f"read of {length} bytes at {addr:#06x} runs past the 64K address space")
+        out = bytearray()
+        # Chunked so one huge reply cannot hit the socket timeout; each chunk is validated.
+        for off in range(0, length, self._READ_CHUNK):
+            n = min(self._READ_CHUNK, length - off)
+            out += self._read_chunk(addr + off, n)
+        return bytes(out)
+
+    _READ_CHUNK = 4096
+
+    def _read_chunk(self, addr: int, n: int) -> bytes:
+        last = ""
+        for _ in range(self._READ_RETRIES + 1):
+            last = self._zrcp.command(f"read-memory {addr} {n}", retries=self._READ_RETRIES).strip()
+            try:
+                data = bytes.fromhex(last)
+            except ValueError:
+                continue
+            if len(data) == n:
+                return data
+        raise ControllerError(
+            f"read-memory {addr:#06x} +{n} returned {len(last) // 2} bytes of valid hex, "
+            f"expected {n} (last reply: {last[:80]!r})"
+        )
 
     def write_memory(self, address, data: bytes) -> None:
         """Write raw bytes via write-memory-raw.
@@ -344,7 +418,7 @@ class Ts2068Debug:
         return self._zrcp.command(f"disassemble {addr} {lines}")
 
     def get_io_ports(self) -> str:
-        return self._zrcp.command("get-io-ports")
+        return self._zrcp.command("get-io-ports", retries=self._READ_RETRIES)
 
     def get_memory_pages(self, verbose: bool = True) -> str:
         return self._zrcp.command("get-memory-pages verbose" if verbose else "get-memory-pages")
@@ -358,6 +432,103 @@ class Ts2068Debug:
             "port": self.port,
             "symbols_loaded": len(self.symbols),
         }
+
+    # -- memory snapshot / diff ------------------------------------------------
+
+    def snapshot_memory(self, address, length: int) -> dict:
+        """Capture a memory range now, to compare against later with diff_memory().
+
+        Returned dict is JSON-serialisable: {"address", "length", "hex"}. This replaces the
+        hand-rolled before/after dumps V2 debugging kept writing (e.g. session tables before
+        SAVE and after LOAD).
+        """
+        addr = self._resolve_symbol_or_address(address)
+        return {"address": addr, "length": length, "hex": self.read_memory(addr, length).hex()}
+
+    def diff_memory(self, snapshot: dict, merge_gap: int = 0) -> dict:
+        """Compare live memory with a snapshot_memory() result.
+
+        Changed bytes within `merge_gap` bytes of each other are reported as one range.
+        Each range carries before/after hex and the nearest symbol of its start.
+        """
+        base = bytes.fromhex(snapshot["hex"])
+        now = self.read_memory(snapshot["address"], len(base))
+        n = len(base)
+        changed = [i for i in range(n) if base[i] != now[i]]
+        groups: list[list[int]] = []
+        for i in changed:
+            if groups and i - groups[-1][1] <= merge_gap + 1:
+                groups[-1][1] = i
+            else:
+                groups.append([i, i])
+        ranges = [
+            {
+                "address": snapshot["address"] + lo,
+                "length": hi - lo + 1,
+                "symbol": self.resolve_address(snapshot["address"] + lo),
+                "before": base[lo:hi + 1].hex(),
+                "after": now[lo:hi + 1].hex(),
+            }
+            for lo, hi in groups
+        ]
+        return {
+            "address": snapshot["address"],
+            "length": n,
+            "changed_bytes": sum(r["length"] for r in ranges),
+            "ranges": ranges,
+        }
+
+    # -- one-call failure diagnostics ---------------------------------------
+
+    def diagnose(self, trace_last: int = 20, stack_words: int = 16) -> dict:
+        """Pause and capture everything needed to start diagnosing a hang or wrong result.
+
+        Registers with the PC resolved to a symbol, the top of the stack as words with each
+        resolved to a symbol (return addresses show as `routine+offset`), interrupt state,
+        TS2068 banking/border state and the last `trace_last` executed instructions. Leaves
+        the emulator paused (call resume() to continue). Every section is captured
+        independently: one failing read is reported in `errors` and never hides the rest.
+        """
+        out: dict = {"errors": {}}
+        try:
+            self.pause()
+            out["paused"] = True
+        except Exception as exc:  # noqa: BLE001
+            out["paused"] = False
+            out["errors"]["pause"] = str(exc)
+        regs = None
+        try:
+            regs = self.get_registers()
+            out["registers"] = regs.to_json()
+            pc = regs.values.get("PC")
+            out["pc"] = pc
+            out["symbol"] = self.resolve_address(pc) if pc is not None else None
+        except Exception as exc:  # noqa: BLE001
+            out["errors"]["registers"] = str(exc)
+        if regs is not None and stack_words > 0 and "SP" in regs.values:
+            try:
+                sp = regs.values["SP"]
+                n = min(stack_words, (0x10000 - sp) // 2)
+                raw = self.read_memory(sp, n * 2) if n > 0 else b""
+                out["stack"] = [
+                    {"address": sp + 2 * k,
+                     "value": int.from_bytes(raw[2 * k:2 * k + 2], "little"),
+                     "symbol": self.resolve_address(int.from_bytes(raw[2 * k:2 * k + 2], "little"))}
+                    for k in range(n)
+                ]
+            except Exception as exc:  # noqa: BLE001
+                out["errors"]["stack"] = str(exc)
+        try:
+            timex = self.timex_state()
+            out["timex"] = {k: v for k, v in timex.items() if k != "raw"}
+        except Exception as exc:  # noqa: BLE001
+            out["errors"]["timex"] = str(exc)
+        if trace_last > 0:
+            try:
+                out["trace"] = self.trace(last=trace_last)
+            except Exception as exc:  # noqa: BLE001
+                out["errors"]["trace"] = str(exc)
+        return out
 
     # -- breakpoints (Milestone 2 slice, exercised here for run_until) ------
 

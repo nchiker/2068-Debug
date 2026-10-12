@@ -8,8 +8,9 @@ as `{"status": "error", "error": "..."}` (or a non-JSON message without
 
 | Command | Purpose |
 |---|---|
-| `start --rom PATH [--port N] [--symbols FILE ...] [--zesarux-dir DIR]` | launch headless ZEsarUX (`--vo null --ao null`, no GUI window), connect |
-| `stop` | terminate the session |
+| `start --rom PATH [--port N] [--symbols FILE ...] [--zesarux-dir DIR]` | launch headless ZEsarUX (`--vo null --ao null`, no GUI window), connect. ROM and symbol paths are stored absolute. Refuses a busy port (naming the owner) and never leaves a half-started emulator running |
+| `stop [--port N \| --pid P]` | terminate the session. Needs no symbols file and works from any directory. `--port`/`--pid` stop an emulator no state file tracks (only a verified ZEsarUX ZRCP process is ever signalled) |
+| `sessions` | list running ZEsarUX ZRCP processes (pid, port) and whether this state directory tracks them — find orphans before choosing a port |
 | `status` | session/process liveness, symbol count, PID, port |
 | `reset [--hard]` | soft/hard machine reset — see gotchas.md "Reset does not mean what it sounds like": `--hard` does NOT reset PC/SP/AF, and even the correct soft reset races if issued while free-running |
 | `reset-known-state` | pause, then soft-reset, then return registers — the only sequence that deterministically lands on PC=0000; use before arming a breakpoint on a one-shot early-boot target |
@@ -48,11 +49,14 @@ SKILL.md's keyboard-injection section for why this matters).
 | Command | Purpose |
 |---|---|
 | `regs` | registers, PC resolved to nearest symbol; includes interrupt state (`IM`, `IFF1`/`IFF2` as "set"/"clear") and `VPS`/`TSTATES` when present |
-| `mem ADDRESS LENGTH` | read memory (symbol or numeric address) |
+| `mem ADDRESS LENGTH` | read memory (symbol or numeric address); long reads are chunked, and a short/empty reply is retried then reported (not a `KeyError`) |
 | `mem-write ADDRESS HEX_BYTES` | write raw bytes (e.g. `mem-write 32768 deadbeef`) — force a state or set up a fixture directly, not only through typed program input |
 | `set-register REG VALUE` | set a register directly (e.g. `set-register HL 0x1234`) |
 | `disassemble [ADDRESS] [--lines N]` | disassemble at a symbol/address, or the current PC if omitted |
 | `trace [--last N]` | bounded circular CPU-history dump, symbol-resolved |
+| `mem-snapshot NAME ADDRESS LENGTH` | save a memory range (in the state directory) to compare against later |
+| `mem-diff NAME [--merge-gap N] [--update]` | live memory vs the snapshot: changed ranges with address, nearest symbol, before/after bytes. `--update` re-baselines. Replaces hand-rolled before/after dumps (session tables around SAVE/LOAD, a buffer around a routine) |
+| `diagnose [--trace N] [--stack N] [--resume]` | one call for a hang or wrong result: pauses, then captures registers (PC symbolised), the top of the stack as words each resolved to `routine+offset` (return addresses), interrupt state, banking/border state and the last N executed instructions. Each section is captured independently (`errors` lists any that failed). Leaves the emulator paused unless `--resume` |
 | `timex` | decoded HOME/EXROM/DOCK memory paging + video mode + AY-3-8912 state, plus `port_fe`/`border` (the ULA border-color port's low 3 bits) |
 
 `IM`/`IFF1`/`IFF2` matter specifically for ISR-only, flaky, or
