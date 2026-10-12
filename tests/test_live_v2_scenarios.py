@@ -133,3 +133,22 @@ def test_memory_diff_and_diagnose_on_a_hung_program(tmp_path):
     finally:
         dbg.stop()
     assert _gone(port)
+
+
+def test_set_register_accepts_a_symbol(tmp_path):
+    if not SYM_PATH.is_file():
+        pytest.skip("needs a .sym next to the ROM")
+    port = free_port()
+    cli(tmp_path, "start", "--rom", str(ROM_PATH), "--port", str(port), "--symbols", str(SYM_PATH))
+    try:
+        cli(tmp_path, "reset-known-state")
+        symbol = next(l.split(":")[0] for l in SYM_PATH.read_text().splitlines()
+                      if l.startswith("MATH_UMUL16:"))
+        cli(tmp_path, "set-register", "PC", symbol)
+        _, regs = cli(tmp_path, "regs")
+        assert regs["symbol"] == symbol
+        rc, out = cli(tmp_path, "set-register", "HL", "NO_SUCH_SYMBOL", check=False)
+        assert rc == 1 and "unknown symbol" in out["error"]
+    finally:
+        cli(tmp_path, "stop", check=False)
+    assert _gone(port)

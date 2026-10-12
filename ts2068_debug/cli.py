@@ -205,7 +205,7 @@ def main(argv=None) -> int:
 
     p_setreg = sub.add_parser("set-register")
     p_setreg.add_argument("register", help="e.g. PC, HL, A")
-    p_setreg.add_argument("value", help="decimal or 0x-prefixed hex")
+    p_setreg.add_argument("value", help="decimal, 0x-prefixed hex, or a symbol name")
 
     p_disasm = sub.add_parser("disassemble")
     p_disasm.add_argument("address", nargs="?", default=None, help="symbol or address; omit for current PC")
@@ -383,7 +383,7 @@ def main(argv=None) -> int:
                     "written",
                 )
             elif args.cmd == "set-register":
-                value = int(args.value, 0)
+                value = dbg._resolve_symbol_or_address(args.value)  # number or symbol, like every other address argument
                 dbg.set_register(args.register, value)
                 _emit(args.json, {"status": "ok", "register": args.register, "value": value}, "set")
             elif args.cmd == "disassemble":
